@@ -1,0 +1,7 @@
+declare_args() {
+  is_art = false
+
+  build_art_gallery = true
+  build_compile_commands = true
+  build_objcpp_apis = true
+}

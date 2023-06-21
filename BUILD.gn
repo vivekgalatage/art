@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("//art/build/features.gni")
 import("gn/perfetto.gni")
 import("gn/test.gni")
 
@@ -29,6 +30,12 @@ import("gn/test.gni")
 # incompatible with the chromium build will cause build/roll failures.
 
 all_targets = [ "protos/perfetto/trace:perfetto_trace_protos" ]
+
+if (is_art) {
+  all_targets += [
+    "//art",
+  ]
+}
 
 if (enable_perfetto_platform_services) {
   all_targets += [

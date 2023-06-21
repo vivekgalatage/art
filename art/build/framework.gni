@@ -1,0 +1,32 @@
+template("framework") {
+  action(target_name) {
+    forward_variables_from(invoker, "*")
+    script = "//art/scripts/framework.py"
+
+    response_file_contents =
+      rebase_path(headers, "//")
+
+    args = [
+      "build",
+      "--framework-name=" + output_name,
+      "--framework-dylib=" + rebase_path(framework_dylib),
+      "--out-dir=" + rebase_path(root_out_dir),
+      "--source-root=" + rebase_path("//"),
+      "--input-files={{response_file_name}}",
+    ]
+
+    signing_key = getenv("CORE_SIGNING_IDENTITY")
+    if (signing_key != "") {
+      args += [
+        "--signing-key=" + signing_key
+      ]
+    }
+
+    result = string_split(output_name, ".")
+    umbrella_header = result[0]
+
+    outputs = [
+      "$root_out_dir/ARTKit.framework/Headers/$umbrella_header.h",
+    ]
+  }
+}
