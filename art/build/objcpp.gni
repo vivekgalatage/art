@@ -1,0 +1,92 @@
+template("objcpp") {
+  objc_sources = filter_include(invoker.sources, ["*.mm"])
+  driver = "clang++"
+
+  foreach(source, objc_sources) {
+    action("compile_$source") {
+      deps = invoker.deps
+      script = "//art/scripts/objcpp.py"
+      obj_output = "$target_out_dir/" + get_path_info(source, "name") + ".o"
+      objc_ccflags = [
+        "-std=c++17",
+        "-c",
+        "-o",
+        rebase_path(obj_output),
+        "-fobjc-arc",
+        rebase_path(source),
+      ]
+
+      if (target_cpu == "x64") {
+        print("Intel all the way")
+        objc_ccflags += [
+          "--target=x86_64-apple-darwin"
+        ]
+      }
+
+      if (is_debug) {
+        objc_ccflags += [
+          "-g",
+        ]
+      }
+
+      foreach(dir, invoker.include_dirs) {
+        objc_ccflags += [
+          "-I" + rebase_path(dir),
+        ]
+      }
+
+      args = [
+        "compile",
+        "--driver",
+        driver,
+      ] + objc_ccflags
+      sources = invoker.sources
+      outputs = [ obj_output ]
+    }
+  }
+
+  action("lib" + target_name) {
+    deps = invoker.deps
+    script = "//art/scripts/objcpp.py"
+    obj_output = "$root_out_dir/" + target_name + ".dylib"
+
+    objc_ldflags = [
+      "-shared",
+      "-lobjc",
+      "-o", rebase_path(obj_output),
+    ]
+
+    if (target_cpu == "x64") {
+      print("Intel all the way")
+      objc_ldflags += [
+        "--target=x86_64-apple-darwin"
+      ]
+    }
+
+    if (defined(invoker.ldflags)) {
+      objc_ldflags += invoker.ldflags
+    }
+
+    foreach(source, objc_sources) {
+      deps += [
+        ":compile_$source"
+      ]
+
+      objc_ldflags += rebase_path(get_target_outputs(":compile_$source"))
+    }
+
+    args = [
+      "link",
+      "--driver",
+      driver] + objc_ldflags
+
+    sources = invoker.sources
+    outputs = [ obj_output ]
+  }
+
+  group(target_name) {
+    deps = [
+      ":lib$target_name"
+    ]
+  }
+}

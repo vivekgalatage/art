@@ -1,0 +1,167 @@
+import("//art/build/features.gni")
+import("//art/build/framework.gni")
+import("//art/build/objcpp.gni")
+
+config("artconfig") {
+  defines = [
+    "ART_IMPLEMENTATION",
+  ]
+
+  include_dirs = [
+    "//",
+    "//art",
+    "//include",
+    "$root_gen_dir/build_config",
+  ]
+}
+
+api_headers = [
+  "core/api/analysis/trace_processor.h",
+  "core/api/art_export.h",
+  "core/api/art_impl.h",
+  "core/api/art_no_destructor.h",
+  "core/api/art_shared.h",
+]
+
+api_sources = [
+  "core/api/analysis/trace_processor.cc",
+]
+
+analysis_sources = [
+  "core/analysis/trace_processor_impl.cc",
+  "core/analysis/trace_processor_impl.h",
+]
+
+if (build_objcpp_apis) {
+  api_objcpp_headers = [
+    "core/api/objcpp/ArtExport.h",
+    "core/api/objcpp/ArtTraceProcessor.h",
+  ]
+
+  api_objcpp_sources = [
+    "core/api/objcpp/ArtTraceProcessor.mm",
+  ]
+
+  objcpp("artobjcpp") {
+    sources =
+      api_objcpp_headers +
+      api_objcpp_sources
+
+    deps = [
+      ":artcore",
+    ]
+
+    ldflags = [
+      "-lartcore",
+      "-L" + rebase_path(root_out_dir),
+    ]
+
+    include_dirs = [
+      "//",
+      "//include",
+      "$root_gen_dir/build_config",
+    ]
+  }
+
+  framework("artkit") {
+    output_name = "ARTKit.framework"
+    deps = [
+      ":artobjcpp",
+    ]
+
+    framework_dylib = "$root_out_dir/libartobjcpp.dylib"
+
+    headers = api_objcpp_headers
+  }
+}
+
+shared_library("artcore") {
+  if (is_mac) {
+    output_extension = "dylib"
+  }
+
+  configs += [
+    ":artconfig",
+  ]
+
+  sources =
+    api_headers +
+    api_sources +
+    analysis_sources
+
+  deps = [
+    "//include/perfetto/trace_processor",
+    "//src/profiling:deobfuscator",
+    "//src/profiling/symbolizer:symbolize_database",
+    "//src/trace_processor"
+  ]
+}
+
+group("core") {
+  deps = [
+    ":artcore",
+  ]
+
+  if (build_objcpp_apis) {
+    deps += [
+      ":artobjcpp",
+      ":artkit",
+    ]
+  }
+}
+
+executable("gallery") {
+  output_name = "art_gallery"
+
+  sources = [
+    "gallery/main.cc",
+  ]
+
+  include_dirs = [
+    "//art/core",
+  ]
+
+  public_deps = [
+    "//art:core",
+  ]
+}
+
+if (build_compile_commands) {
+  action("generate_compile_commands") {
+    testonly = true
+    script = "//art/scripts/generate_compiler_commands.py"
+    args = [
+      "generate",
+      "--out-dir", rebase_path(root_out_dir),
+      "--json", rebase_path("//compile_commands.json")
+    ]
+
+    outputs = [
+      "$root_out_dir/../compile_commands.json",
+    ]
+
+    deps = [
+      ":core",
+      "//src/trace_processor",
+    ]
+  }
+}
+
+group("art") {
+  testonly = true
+  deps = [
+    ":core",
+  ]
+
+  if (build_compile_commands) {
+    deps += [
+      ":generate_compile_commands",
+    ]
+  }
+
+  if (build_art_gallery) {
+    deps += [
+      ":gallery",
+    ]
+  }
+}
