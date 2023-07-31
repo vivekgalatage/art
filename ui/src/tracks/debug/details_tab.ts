@@ -17,13 +17,16 @@ import m from 'mithril';
 import {GridLayout} from '../..//frontend/widgets/grid_layout';
 import {Section} from '../..//frontend/widgets/section';
 import {ColumnType, LONG, STR} from '../../common/query_result';
-import {TPDuration, tpDurationFromSql, tpTimeFromSql} from '../../common/time';
+import {Duration, duration, Time, time} from '../../common/time';
+import {raf} from '../../core/raf_scheduler';
 import {
   BottomTab,
   bottomTabRegistry,
   NewBottomTabArgs,
 } from '../../frontend/bottom_tab';
-import {globals} from '../../frontend/globals';
+import {
+  GenericSliceDetailsTabConfig,
+} from '../../frontend/generic_slice_details_tab';
 import {
   getSlice,
   SliceDetails,
@@ -31,10 +34,9 @@ import {
 } from '../../frontend/sql/slice';
 import {
   asSliceSqlId,
-  asTPTimestamp,
-  TPTimestamp,
   Utid,
 } from '../../frontend/sql_types';
+import {sqlValueToString} from '../../frontend/sql_utils';
 import {
   getProcessName,
   getThreadName,
@@ -45,7 +47,7 @@ import {
   threadStateRef,
 } from '../../frontend/thread_state';
 import {DetailsShell} from '../../frontend/widgets/details_shell';
-import {Duration} from '../../frontend/widgets/duration';
+import {DurationWidget} from '../../frontend/widgets/duration';
 import {Timestamp} from '../../frontend/widgets/timestamp';
 import {
   dictToTree,
@@ -53,13 +55,8 @@ import {
   Tree,
   TreeNode,
 } from '../../frontend/widgets/tree';
-import {ARG_PREFIX} from './add_debug_track_menu';
-import {sqlValueToString} from '../../frontend/sql_utils';
 
-interface DebugSliceDetailsTabConfig {
-  sqlTableName: string;
-  id: number;
-}
+import {ARG_PREFIX} from './add_debug_track_menu';
 
 function sqlValueToNumber(value?: ColumnType): number|undefined {
   if (typeof value === 'bigint') return Number(value);
@@ -86,14 +83,11 @@ function renderTreeContents(dict: {[key: string]: m.Child}): m.Child[] {
 }
 
 export class DebugSliceDetailsTab extends
-    BottomTab<DebugSliceDetailsTabConfig> {
-  static readonly kind = 'org.perfetto.DebugSliceDetailsTab';
+    BottomTab<GenericSliceDetailsTabConfig> {
+  static readonly kind = 'dev.perfetto.DebugSliceDetailsTab';
 
   data?: {
-    name: string,
-    ts: TPTimestamp,
-    dur: TPDuration,
-    args: {[key: string]: ColumnType};
+    name: string, ts: time, dur: duration, args: {[key: string]: ColumnType};
   };
   // We will try to interpret the arguments as references into well-known
   // tables. These values will be set if the relevant columns exist and
@@ -107,7 +101,7 @@ export class DebugSliceDetailsTab extends
   }
 
   private async maybeLoadThreadState(
-      id: number|undefined, ts: TPTimestamp, dur: TPDuration,
+      id: number|undefined, ts: time, dur: duration,
       utid?: Utid): Promise<ThreadState|undefined> {
     if (id === undefined) return undefined;
     if (utid === undefined) return undefined;
@@ -138,7 +132,7 @@ export class DebugSliceDetailsTab extends
   }
 
   private async maybeLoadSlice(
-      id: number|undefined, ts: TPTimestamp, dur: TPDuration,
+      id: number|undefined, ts: time, dur: duration,
       sqlTrackId?: number): Promise<SliceDetails|undefined> {
     if (id === undefined) return undefined;
     if (sqlTrackId === undefined) return undefined;
@@ -179,7 +173,7 @@ export class DebugSliceDetailsTab extends
     });
     this.data = {
       name: row.name,
-      ts: row.ts as TPTimestamp,
+      ts: Time.fromRaw(row.ts),
       dur: row.dur,
       args: {},
     };
@@ -204,7 +198,7 @@ export class DebugSliceDetailsTab extends
         this.data.dur,
         sqlValueToNumber(this.data.args['track_id']));
 
-    globals.rafScheduler.scheduleRedraw();
+    raf.scheduleRedraw();
   }
 
   constructor(args: NewBottomTabArgs) {
@@ -218,9 +212,8 @@ export class DebugSliceDetailsTab extends
     }
     const details = dictToTreeNodes({
       'Name': this.data['name'] as string,
-      'Start time':
-          m(Timestamp, {ts: asTPTimestamp(tpTimeFromSql(this.data['ts']))}),
-      'Duration': m(Duration, {dur: tpDurationFromSql(this.data['dur'])}),
+      'Start time': m(Timestamp, {ts: Time.fromSql(this.data['ts'])}),
+      'Duration': m(DurationWidget, {dur: Duration.fromSql(this.data['dur'])}),
       'Debug slice id': `${this.config.sqlTableName}[${this.config.id}]`,
     });
     details.push(this.renderThreadStateInfo());

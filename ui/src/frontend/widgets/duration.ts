@@ -14,14 +14,14 @@
 
 import m from 'mithril';
 
-import {TPDuration, tpTimeToCode} from '../../common/time';
+import {Duration, duration} from '../../common/time';
 
-interface DurationAttrs {
-  dur: TPDuration;
+interface DurationWidgetAttrs {
+  dur: duration;
 }
 
-export class Duration implements m.ClassComponent<DurationAttrs> {
-  view(vnode: m.Vnode<DurationAttrs>) {
-    return tpTimeToCode(vnode.attrs.dur);
+export class DurationWidget implements m.ClassComponent<DurationWidgetAttrs> {
+  view(vnode: m.Vnode<DurationWidgetAttrs>) {
+    return Duration.format(vnode.attrs.dur);
   }
 }

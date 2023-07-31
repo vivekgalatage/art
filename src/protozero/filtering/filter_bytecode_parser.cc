@@ -105,15 +105,19 @@ bool FilterBytecodeParser::LoadInternal(const uint8_t* bytecode_data,
     }
 
     if (opcode == kFilterOpcode_SimpleField ||
-        opcode == kFilterOpcode_NestedField) {
+        opcode == kFilterOpcode_NestedField ||
+        opcode == kFilterOpcode_FilterString) {
       // Field words are organized as follow:
       // MSB: 1 if allowed, 0 if not allowed.
       // Remaining bits:
       //   Message index in the case of nested (non-simple) messages.
-      //   0x7f..f in the case of simple messages.
+      //   0x7f..e in the case of string fields which need filtering.
+      //   0x7f..f in the case of simple fields.
       uint32_t msg_id;
       if (opcode == kFilterOpcode_SimpleField) {
         msg_id = kSimpleField;
+      } else if (opcode == kFilterOpcode_FilterString) {
+        msg_id = kFilterStringField;
       } else {  // FILTER_OPCODE_NESTED_FIELD
         // The next word in the bytecode contains the message index.
         if (!has_next_word) {
@@ -196,7 +200,7 @@ bool FilterBytecodeParser::LoadInternal(const uint8_t* bytecode_data,
 
 FilterBytecodeParser::QueryResult FilterBytecodeParser::Query(
     uint32_t msg_index,
-    uint32_t field_id) {
+    uint32_t field_id) const {
   FilterBytecodeParser::QueryResult res{false, 0u};
   if (static_cast<uint64_t>(msg_index) + 1 >=
       static_cast<uint64_t>(message_offset_.size())) {
@@ -232,7 +236,7 @@ FilterBytecodeParser::QueryResult FilterBytecodeParser::Query(
 
   res.allowed = (field_state & kAllowed) != 0;
   res.nested_msg_index = field_state & ~kAllowed;
-  PERFETTO_DCHECK(res.simple_field() ||
+  PERFETTO_DCHECK(!res.nested_msg_field() ||
                   res.nested_msg_index < message_offset_.size() - 1);
   return res;
 }

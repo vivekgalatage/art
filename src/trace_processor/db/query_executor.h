@@ -62,7 +62,6 @@ class QueryExecutor {
   RowMap Sort(const std::vector<Order>&) { PERFETTO_FATAL("Not implemented."); }
 
   // Enables QueryExecutor::Filter on Table columns.
-  // TODO(b/283763282): Implement.
   static RowMap FilterLegacy(const Table*, const std::vector<Constraint>&);
 
   // Enables QueryExecutor::Sort on Table columns.
@@ -72,10 +71,10 @@ class QueryExecutor {
   }
 
   // Used only in unittests. Exposes private function.
-  static RowMap BoundedColumnFilterForTesting(const Constraint& c,
-                                              const SimpleColumn& col,
-                                              RowMap* rm) {
-    return RowMap(LinearSearch(c, col, rm));
+  static void BoundedColumnFilterForTesting(const Constraint& c,
+                                            const SimpleColumn& col,
+                                            RowMap* rm) {
+    LinearSearch(c, col, rm);
   }
 
   // Used only in unittests. Exposes private function.
@@ -91,9 +90,7 @@ class QueryExecutor {
 
   // Filters the column using Range algorithm - tries to find the smallest Range
   // to filter the storage with.
-  static BitVector LinearSearch(const Constraint&,
-                                const SimpleColumn&,
-                                RowMap*);
+  static void LinearSearch(const Constraint&, const SimpleColumn&, RowMap*);
 
   // Filters the column using Index algorithm - finds the indices to filter the
   // storage with.

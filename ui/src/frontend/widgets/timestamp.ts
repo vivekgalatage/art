@@ -14,37 +14,89 @@
 
 import m from 'mithril';
 
-import {formatTime} from '../../common/time';
+import {Actions} from '../../common/actions';
+import {
+  time,
+  Time,
+  TimestampFormat,
+  timestampFormat,
+} from '../../common/time';
 import {Anchor} from '../anchor';
 import {copyToClipboard} from '../clipboard';
+import {globals} from '../globals';
 import {Icons} from '../semantic_icons';
-import {TPTimestamp} from '../sql_types';
 
 import {MenuItem, PopupMenu2} from './menu';
+
+// import {MenuItem, PopupMenu2} from './menu';
 
 interface TimestampAttrs {
   // The timestamp to print, this should be the absolute, raw timestamp as
   // found in trace processor.
-  ts: TPTimestamp;
-  minimal?: boolean;
+  ts: time;
+  // Custom text value to show instead of the default HH:MM:SS.mmm uuu nnn
+  // formatting.
+  display?: m.Children;
+  extraMenuItems?: m.Child[];
 }
 
 export class Timestamp implements m.ClassComponent<TimestampAttrs> {
   view({attrs}: m.Vnode<TimestampAttrs>) {
-    const {ts, minimal = false} = attrs;
+    const {ts} = attrs;
     return m(
         PopupMenu2,
         {
           trigger:
-              m(Anchor, {icon: Icons.ContextMenu}, formatTime(ts, minimal)),
+              m(Anchor,
+                {
+                  onmouseover: () => {
+                    globals.dispatch(Actions.setHoverCursorTimestamp({ts}));
+                  },
+                  onmouseout: () => {
+                    globals.dispatch(
+                        Actions.setHoverCursorTimestamp({ts: Time.INVALID}));
+                  },
+                },
+                attrs.display ?? renderTimestamp(ts)),
         },
         m(MenuItem, {
           icon: Icons.Copy,
-          label: 'Copy raw timestamp',
+          label: `Copy raw value`,
           onclick: () => {
             copyToClipboard(ts.toString());
           },
         }),
+        ...(attrs.extraMenuItems ?? []),
     );
   }
+}
+
+function renderTimestamp(time: time): m.Children {
+  const fmt = timestampFormat();
+  const domainTime = globals.toDomainTime(time);
+  switch (fmt) {
+    case TimestampFormat.Timecode:
+      return renderTimecode(domainTime);
+    case TimestampFormat.Raw:
+      return domainTime.toString();
+    case TimestampFormat.RawLocale:
+      return domainTime.toLocaleString();
+    case TimestampFormat.Seconds:
+      return Time.formatSeconds(domainTime);
+    default:
+      const x: never = fmt;
+      throw new Error(`Invalid timestamp ${x}`);
+  }
+}
+
+export function renderTimecode(time: time): m.Children {
+  const {dhhmmss, millis, micros, nanos} = Time.toTimecode(time);
+  return m(
+      'span.pf-timecode',
+      m('span.pf-timecode-hms', dhhmmss),
+      '.',
+      m('span.pf-timecode-millis', millis),
+      m('span.pf-timecode-micros', micros),
+      m('span.pf-timecode-nanos', nanos),
+  );
 }

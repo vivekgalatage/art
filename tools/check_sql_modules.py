@@ -16,19 +16,28 @@
 # This tool checks that every SQL object created without prefix
 # 'internal_' is documented with proper schema.
 
+import argparse
+from typing import List, Tuple
 import os
 import sys
+import re
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(ROOT_DIR))
 
-from python.generators.stdlib_docs.parse import parse_file_to_dict
+from python.generators.stdlib_docs.parse import ParsedFile, parse_file
 
 
 def main():
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+      '--stdlib-sources',
+      default=os.path.join(ROOT_DIR, "src", "trace_processor", "perfetto_sql",
+                           "stdlib"))
+  args = parser.parse_args()
   errors = []
-  metrics_sources = os.path.join(ROOT_DIR, "src", "trace_processor", "stdlib")
-  for root, _, files in os.walk(metrics_sources, topdown=True):
+  modules: List[Tuple[str, str, ParsedFile]] = []
+  for root, _, files in os.walk(args.stdlib_sources, topdown=True):
     for f in files:
       path = os.path.join(root, f)
       if not path.endswith(".sql"):
@@ -36,8 +45,31 @@ def main():
       with open(path, 'r') as f:
         sql = f.read()
 
-      res = parse_file_to_dict(path, sql)
-      errors += res if isinstance(res, list) else []
+      parsed = parse_file(path, sql)
+      modules.append((path, sql, parsed))
+
+  functions = set()
+
+  for path, sql, parsed in modules:
+    errors += parsed.errors
+
+    lines = [l.strip() for l in sql.split('\n')]
+    for line in lines:
+      # Strip the SQL comments.
+      line = re.sub(r'--.*$', '', line)
+
+      # Ban the use of LIKE in non-comment lines.
+      if 'like' in line.casefold():
+        errors.append('LIKE is banned in trace processor metrics. '
+                      'Prefer GLOB instead.')
+        errors.append('Offending file: %s' % path)
+
+      # Ban the use of CREATE_FUNCTION.
+      if 'create_function' in line.casefold():
+        errors.append('CREATE_FUNCTION is deprecated in trace processor. '
+                      'Prefer CREATE PERFETTO FUNCTION instead.')
+        errors.append('Offending file: %s' % path)
+
   sys.stderr.write("\n".join(errors))
   sys.stderr.write("\n")
   return 0 if not errors else 1

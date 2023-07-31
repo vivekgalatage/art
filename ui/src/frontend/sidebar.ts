@@ -26,11 +26,16 @@ import {
   enableMetatracing,
   isMetatracingEnabled,
 } from '../common/metatracing';
-import {EngineMode, TraceArrayBufferSource} from '../common/state';
+import {EngineMode} from '../common/state';
+import {
+  setTimestampFormat,
+  TimestampFormat,
+  timestampFormat,
+} from '../common/time';
+import {raf} from '../core/raf_scheduler';
 import {SCM_REVISION, VERSION} from '../gen/perfetto_version';
 
 import {Animation} from './animation';
-import {onClickCopy} from './clipboard';
 import {downloadData, downloadUrl} from './download_utils';
 import {globals} from './globals';
 import {toggleHelp} from './help_modal';
@@ -41,12 +46,13 @@ import {
 import {showModal} from './modal';
 import {runQueryInNewTab} from './query_result_tab';
 import {Router} from './router';
-import {isDownloadable, isShareable} from './trace_attrs';
+import {createTraceLink, isDownloadable, shareTrace} from './trace_attrs';
 import {
   convertToJson,
   convertTraceToJsonAndDownload,
   convertTraceToSystraceAndDownload,
 } from './trace_converter';
+import {Button} from './widgets/button';
 
 const ALL_PROCESSES_QUERY = 'select name, pid from process order by name;';
 
@@ -141,6 +147,13 @@ const WIDGETS_PAGE_IN_NAV_FLAG = featureFlags.register({
   defaultValue: false,
 });
 
+const INSIGHTS_PAGE_IN_NAV_FLAG = featureFlags.register({
+  id: 'showInsightsPageInNav',
+  name: 'Show insights page',
+  description: 'Show a link to the insights page in the side bar.',
+  defaultValue: false,
+});
+
 function shouldShowHiringBanner(): boolean {
   return globals.isInternalUser && HIRING_BANNER_FLAG.get();
 }
@@ -152,10 +165,10 @@ function createCannedQuery(query: string, title: string): (_: Event) => void {
   };
 }
 
-const EXAMPLE_ANDROID_TRACE_URL =
+export const EXAMPLE_ANDROID_TRACE_URL =
     'https://storage.googleapis.com/perfetto-misc/example_android_trace_15s';
 
-const EXAMPLE_CHROME_TRACE_URL =
+export const EXAMPLE_CHROME_TRACE_URL =
     'https://storage.googleapis.com/perfetto-misc/chrome_example_wikipedia.perfetto_trace.gz';
 
 interface SectionItem {
@@ -212,7 +225,7 @@ const SECTIONS: Section[] = [
       {t: 'Show timeline', a: navigateViewer, i: 'line_style'},
       {
         t: 'Share',
-        a: shareTrace,
+        a: handleShareTrace,
         i: 'share',
         internalUserOnly: true,
         isPending: () => globals.getConversionJobStatus('create_permalink') ===
@@ -224,7 +237,13 @@ const SECTIONS: Section[] = [
         i: 'file_download',
         checkDownloadDisabled: true,
       },
-      {t: 'Query (SQL)', a: navigateAnalyze, i: 'control_camera'},
+      {t: 'Query (SQL)', a: navigateQuery, i: 'database'},
+      {
+        t: 'Insights',
+        a: navigateInsights,
+        i: 'insights',
+        isVisible: () => INSIGHTS_PAGE_IN_NAV_FLAG.get(),
+      },
       {t: 'Metrics', a: navigateMetrics, i: 'speed'},
       {t: 'Info and stats', a: navigateInfo, i: 'info'},
     ],
@@ -458,7 +477,7 @@ export function isTraceLoaded(): boolean {
   return globals.getCurrentEngine() !== undefined;
 }
 
-function openTraceUrl(url: string): (e: Event) => void {
+export function openTraceUrl(url: string): (e: Event) => void {
   return (e) => {
     globals.logging.logEvent('Trace Actions', 'Open example trace');
     e.preventDefault();
@@ -548,9 +567,14 @@ function navigateWidgets(e: Event) {
   Router.navigate('#!/widgets');
 }
 
-function navigateAnalyze(e: Event) {
+function navigateQuery(e: Event) {
   e.preventDefault();
   Router.navigate('#!/query');
+}
+
+function navigateInsights(e: Event) {
+  e.preventDefault();
+  Router.navigate('#!/insights');
 }
 
 function navigateFlags(e: Event) {
@@ -573,40 +597,9 @@ function navigateViewer(e: Event) {
   Router.navigate('#!/viewer');
 }
 
-function shareTrace(e: Event) {
+function handleShareTrace(e: Event) {
   e.preventDefault();
-  const engine = assertExists(globals.getCurrentEngine());
-  const traceUrl = (engine.source as (TraceArrayBufferSource)).url || '';
-
-  // If the trace is not shareable (has been pushed via postMessage()) but has
-  // a url, create a pseudo-permalink by echoing back the URL.
-  if (!isShareable()) {
-    const msg =
-        [m('p',
-           'This trace was opened by an external site and as such cannot ' +
-               'be re-shared preserving the UI state.')];
-    if (traceUrl) {
-      msg.push(m('p', 'By using the URL below you can open this trace again.'));
-      msg.push(m('p', 'Clicking will copy the URL into the clipboard.'));
-      msg.push(createTraceLink(traceUrl, traceUrl));
-    }
-
-    showModal({
-      title: 'Cannot create permalink from external trace',
-      content: m('div', msg),
-    });
-    return;
-  }
-
-  if (!isShareable() || !isTraceLoaded()) return;
-
-  const result = confirm(
-      `Upload UI state and generate a permalink. ` +
-      `The trace will be accessible by anybody with the permalink.`);
-  if (result) {
-    globals.logging.logEvent('Trace Actions', 'Create permalink');
-    globals.dispatch(Actions.createPermalink({isRecordingConfig: false}));
-  }
+  shareTrace();
 }
 
 function downloadTrace(e: Event) {
@@ -830,6 +823,30 @@ const ServiceWorkerWidget: m.Component = {
   },
 };
 
+function cycleTimestampFormat() {
+  let nextFmt: TimestampFormat = TimestampFormat.Timecode;
+  const fmt = timestampFormat();
+  switch (fmt) {
+    case TimestampFormat.Timecode:
+      nextFmt = TimestampFormat.Raw;
+      break;
+    case TimestampFormat.Raw:
+      nextFmt = TimestampFormat.RawLocale;
+      break;
+    case TimestampFormat.RawLocale:
+      nextFmt = TimestampFormat.Seconds;
+      break;
+    case TimestampFormat.Seconds:
+      nextFmt = TimestampFormat.Timecode;
+      break;
+    default:
+      const x: never = fmt;
+      throw new Error(`Invalid timestamp format ${x}`);
+  }
+  setTimestampFormat(nextFmt);
+  raf.scheduleFullRedraw();
+}
+
 const SidebarFooter: m.Component = {
   view() {
     return m(
@@ -843,6 +860,13 @@ const SidebarFooter: m.Component = {
             'assessment')),
         m(EngineRPCWidget),
         m(ServiceWorkerWidget),
+        m(Button, {
+          icon: 'schedule',
+          minimal: true,
+          compact: true,
+          title: 'Cycle timestamp formats',
+          onclick: cycleTimestampFormat,
+        }),
         m(
             '.version',
             m('a',
@@ -871,8 +895,7 @@ class HiringBanner implements m.ClassComponent {
 }
 
 export class Sidebar implements m.ClassComponent {
-  private _redrawWhileAnimating =
-      new Animation(() => globals.rafScheduler.scheduleFullRedraw());
+  private _redrawWhileAnimating = new Animation(() => raf.scheduleFullRedraw());
   view() {
     if (globals.hideSidebar) return null;
     const vdomSections = [];
@@ -971,7 +994,7 @@ export class Sidebar implements m.ClassComponent {
               {
                 onclick: () => {
                   section.expanded = !section.expanded;
-                  globals.rafScheduler.scheduleFullRedraw();
+                  raf.scheduleFullRedraw();
                 },
               },
               m('h1', {title: section.summary}, section.title),
@@ -1014,17 +1037,4 @@ export class Sidebar implements m.ClassComponent {
               )),
     );
   }
-}
-
-function createTraceLink(title: string, url: string) {
-  if (url === '') {
-    return m('a.trace-file-name', title);
-  }
-  const linkProps = {
-    href: url,
-    title: 'Click to copy the URL',
-    target: '_blank',
-    onclick: onClickCopy(url),
-  };
-  return m('a.trace-file-name', linkProps, title);
 }

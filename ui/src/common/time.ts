@@ -12,80 +12,259 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {BigintMath} from '../base/bigint_math';
 import {assertTrue} from '../base/logging';
-import {asTPTimestamp, toTraceTime} from '../frontend/sql_types';
+import {Brand} from '../frontend/brand';
 
 import {ColumnType} from './query_result';
 
-// TODO(hjd): Combine with timeToCode.
-export function tpTimeToString(time: TPTime) {
-  const sec = tpTimeToSeconds(time);
-  const units = ['s', 'ms', 'us', 'ns'];
-  const sign = Math.sign(sec);
-  let n = Math.abs(sec);
-  let u = 0;
-  while (n < 1 && n !== 0 && u < units.length - 1) {
-    n *= 1000;
-    u++;
+// The |time| type represents trace time in the same units and domain as trace
+// processor (i.e. typically boot time in nanoseconds, but most of the UI should
+// be completely agnostic to this).
+export type time = Brand<bigint, 'time'>;
+
+// The |duration| type is used to represent the duration of time between two
+// |time|s. The domain is irrelevant because a duration is relative.
+export type duration = bigint;
+
+// The conversion factor for convering between time units and seconds.
+const TIME_UNITS_PER_SEC = 1e9;
+
+export class Time {
+  // Negative time is never found in a trace - so -1 is commonly used as a flag
+  // to represent a value is undefined or unset, without having to use a
+  // nullable or union type.
+  static readonly INVALID = Time.fromRaw(-1n);
+
+  // The min and max possible values, considering times cannot be negative.
+  static readonly MIN = Time.fromRaw(0n);
+  static readonly MAX = Time.fromRaw(BigintMath.INT64_MAX);
+
+  static readonly ZERO = Time.fromRaw(0n);
+
+  // Cast a bigint to a |time|. Supports potentially |undefined| values.
+  // I.e. it performs the following conversions:
+  // - `bigint` -> `time`
+  // - `bigint|undefined` -> `time|undefined`
+  //
+  // Use this function with caution. The function is effectively a no-op in JS,
+  // but using it tells TypeScript that "this value is a time value". It's up to
+  // the caller to ensure the value is in the correct units and time domain.
+  //
+  // If you're reaching for this function after doing some maths on a |time|
+  // value and it's decayed to a |bigint| consider using the static math methods
+  // in |Time| instead, as they will do the appropriate casting for you.
+  static fromRaw(v: bigint): time;
+  static fromRaw(v?: bigint): time|undefined;
+  static fromRaw(v?: bigint): time|undefined {
+    return v as (time | undefined);
   }
-  return `${sign < 0 ? '-' : ''}${Math.round(n * 10) / 10} ${units[u]}`;
-}
 
-// 1000000023ns -> "1.000 000 023"
-export function formatTPTime(time: TPTime) {
-  const strTime = time.toString().padStart(10, '0');
-
-  const nanos = strTime.slice(-3);
-  const micros = strTime.slice(-6, -3);
-  const millis = strTime.slice(-9, -6);
-  const seconds = strTime.slice(0, -9);
-
-  return `${seconds}.${millis} ${micros} ${nanos}`;
-}
-
-// TODO(hjd): Rename to formatTimestampWithUnits
-// 1000000023ns -> "1s 23ns"
-export function tpTimeToCode(time: TPTime): string {
-  let result = '';
-  if (time < 1) return '0s';
-  const unitAndValue: [string, bigint][] = [
-    ['m', 60000000000n],
-    ['s', 1000000000n],
-    ['ms', 1000000n],
-    ['us', 1000n],
-    ['ns', 1n],
-  ];
-  unitAndValue.forEach(([unit, unitSize]) => {
-    if (time >= unitSize) {
-      const unitCount = time / unitSize;
-      result += unitCount.toLocaleString() + unit + ' ';
-      time %= unitSize;
+  // Throws if the value cannot be reasonably converted to a bigint.
+  // Assumes value is in native time units.
+  static fromSql(value: ColumnType): time {
+    if (typeof value === 'bigint') {
+      return Time.fromRaw(value);
+    } else if (typeof value === 'number') {
+      return Time.fromRaw(BigInt(Math.floor(value)));
+    } else if (value === null) {
+      return Time.ZERO;
+    } else {
+      throw Error(`Refusing to create time from unrelated type ${value}`);
     }
-  });
-  return result.slice(0, -1);
-}
+  }
 
-export function toNs(seconds: number) {
-  return Math.round(seconds * 1e9);
-}
+  // Create a time from seconds.
+  // Use this function with caution. Number does not have the full range of time
+  // so only use when stricy accuracy isn't required.
+  static fromSeconds(seconds: number): time {
+    return Time.fromRaw(BigInt(Math.floor(seconds * TIME_UNITS_PER_SEC)));
+  }
 
-// Given an absolute time in TP units, print the time from the start of the
-// trace as a string.
-// Going forward this shall be the universal timestamp printing function
-// superseding all others, with options to customise formatting and the domain.
-// If minimal is true, the time will be printed without any units and in a
-// minimal but still readable format, otherwise the time will be printed with
-// units on each group of digits. Use minimal in places like tables and
-// timelines where there are likely to be multiple timestamps in one place, and
-// use the normal formatting in places that have one-off timestamps.
-export function formatTime(time: TPTime, minimal: boolean = false): string {
-  const relTime = toTraceTime(asTPTimestamp(time));
-  if (minimal) {
-    return formatTPTime(relTime);
-  } else {
-    return tpTimeToCode(relTime);
+  // Convert time value to seconds and return as a number (i.e. float).
+  // Use this function with caution. Not only does it lose precision, it's also
+  // surpsisingly slow. Avoid using it in the render loop.
+  static toSeconds(t: time): number {
+    return Number(t) / TIME_UNITS_PER_SEC;
+  }
+
+  static add(t: time, d: duration): time {
+    return Time.fromRaw(t + d);
+  }
+
+  static sub(t: time, d: duration): time {
+    return Time.fromRaw(t - d);
+  }
+
+  static diff(a: time, b: time): duration {
+    return a - b;
+  }
+
+  static min(a: time, b: time): time {
+    return Time.fromRaw(BigintMath.min(a, b));
+  }
+
+  static max(a: time, b: time): time {
+    return Time.fromRaw(BigintMath.max(a, b));
+  }
+
+  static quantFloor(a: time, b: duration): time {
+    return Time.fromRaw(BigintMath.quantFloor(a, b));
+  }
+
+  static quantCeil(a: time, b: duration): time {
+    return Time.fromRaw(BigintMath.quantCeil(a, b));
+  }
+
+  static quant(a: time, b: duration): time {
+    return Time.fromRaw(BigintMath.quant(a, b));
+  }
+
+  // Format time as seconds.
+  static formatSeconds(time: time): string {
+    return Time.toSeconds(time).toString() + ' s';
+  }
+
+  static toTimecode(time: time): Timecode {
+    return new Timecode(time);
   }
 }
+
+export class Duration {
+  // The min and max possible duration values - durations can be negative.
+  static MIN = BigintMath.INT64_MIN;
+  static MAX = BigintMath.INT64_MAX;
+  static ZERO = 0n;
+
+  static min(a: duration, b: duration): duration {
+    return BigintMath.min(a, b);
+  }
+
+  static max(a: duration, b: duration): duration {
+    return BigintMath.max(a, b);
+  }
+
+  static fromMillis(millis: number) {
+    return BigInt(Math.floor((millis / 1e3) * TIME_UNITS_PER_SEC));
+  }
+
+  // Throws if the value cannot be reasonably converted to a bigint.
+  // Assumes value is in nanoseconds.
+  static fromSql(value: ColumnType): duration {
+    if (typeof value === 'bigint') {
+      return value;
+    } else if (typeof value === 'number') {
+      return BigInt(Math.floor(value));
+    } else if (value === null) {
+      return Duration.ZERO;
+    } else {
+      throw Error(`Refusing to create duration from unrelated type ${value}`);
+    }
+  }
+
+  // Convert time to seconds as a number.
+  // Use this function with caution. It loses precision and is slow.
+  static toSeconds(d: duration) {
+    return Number(d) / TIME_UNITS_PER_SEC;
+  }
+
+  // Print duration as as human readable string - i.e. to only a handful of
+  // significant figues.
+  // Use this when readability is more desireable than precision.
+  // Examples: 1234 -> 1.23ns
+  //           123456789 -> 123ms
+  //           123,123,123,123,123 -> 34h 12m
+  //           1,000,000,023 -> 1 s
+  //           1,230,000,023 -> 1.2 s
+  static humanise(dur: duration) {
+    const sec = Duration.toSeconds(dur);
+    const units = ['s', 'ms', 'us', 'ns'];
+    const sign = Math.sign(sec);
+    let n = Math.abs(sec);
+    let u = 0;
+    while (n < 1 && n !== 0 && u < units.length - 1) {
+      n *= 1000;
+      u++;
+    }
+    return `${sign < 0 ? '-' : ''}${Math.round(n * 10) / 10}${units[u]}`;
+  }
+
+  // Print duration with absolute precision.
+  static format(duration: duration): string {
+    let result = '';
+    if (duration < 1) return '0s';
+    const unitAndValue: [string, bigint][] = [
+      ['h', 3_600_000_000_000n],
+      ['m', 60_000_000_000n],
+      ['s', 1_000_000_000n],
+      ['ms', 1_000_000n],
+      ['us', 1_000n],
+      ['ns', 1n],
+    ];
+    unitAndValue.forEach(([unit, unitSize]) => {
+      if (duration >= unitSize) {
+        const unitCount = duration / unitSize;
+        result += unitCount.toLocaleString() + unit + ' ';
+        duration = duration % unitSize;
+      }
+    });
+    return result.slice(0, -1);
+  }
+}
+
+// This class takes a time and converts it to a set of strings representing a
+// time code where each string represents a group of time units formatted with
+// an appropriate number of leading zeros.
+export class Timecode {
+  public readonly sign: string;
+  public readonly days: string;
+  public readonly hours: string;
+  public readonly minutes: string;
+  public readonly seconds: string;
+  public readonly millis: string;
+  public readonly micros: string;
+  public readonly nanos: string;
+
+  constructor(time: time) {
+    this.sign = time < 0 ? '-' : '';
+
+    const absTime = BigintMath.abs(time);
+
+    const days = (absTime / 86_400_000_000_000n);
+    const hours = (absTime / 3_600_000_000_000n) % 24n;
+    const minutes = (absTime / 60_000_000_000n) % 60n;
+    const seconds = (absTime / 1_000_000_000n) % 60n;
+    const millis = (absTime / 1_000_000n) % 1_000n;
+    const micros = (absTime / 1_000n) % 1_000n;
+    const nanos = absTime % 1_000n;
+
+    this.days = days.toString();
+    this.hours = hours.toString().padStart(2, '0');
+    this.minutes = minutes.toString().padStart(2, '0');
+    this.seconds = seconds.toString().padStart(2, '0');
+    this.millis = millis.toString().padStart(3, '0');
+    this.micros = micros.toString().padStart(3, '0');
+    this.nanos = nanos.toString().padStart(3, '0');
+  }
+
+  // Get the upper part of the timecode formatted as: [-]DdHH:MM:SS.
+  get dhhmmss(): string {
+    const days = this.days === '0' ? '' : `${this.days}d`;
+    return `${this.sign}${days}${this.hours}:${this.minutes}:${this.seconds}`;
+  }
+
+  // Get the subsecond part of the timecode formatted as: mmm uuu nnn.
+  // The "space" char is configurable but defaults to a normal space.
+  subsec(spaceChar: string = ' '): string {
+    return `${this.millis}${spaceChar}${this.micros}${spaceChar}${this.nanos}`;
+  }
+
+  // Formats the entire timecode to a string.
+  toString(spaceChar: string = ' '): string {
+    return `${this.dhhmmss}.${this.subsec(spaceChar)}`;
+  }
+}
+
 
 export function currentDateHourAndMinute(): string {
   const date = new Date();
@@ -93,82 +272,30 @@ export function currentDateHourAndMinute(): string {
       date.getMinutes()}`;
 }
 
-// Aliased "Trace Processor" time and duration types.
-// Note(stevegolton): While it might be nice to type brand these in the future,
-// for now we're going to keep things simple. We do a lot of maths with these
-// timestamps and type branding requires a lot of jumping through hoops to
-// coerse the type back to the correct format.
-export type TPTime = bigint;
-export type TPDuration = bigint;
+// Create a Time value from an arbitrary SQL value.
 
-export function tpTimeFromNanos(nanos: number): TPTime {
-  return BigInt(Math.floor(nanos));
+
+// Represents a half-open interval of time in the form [start, end).
+// E.g. interval contains all time values which are >= start and < end.
+export interface Span<TimeT, DurationT = TimeT> {
+  get start(): TimeT;
+  get end(): TimeT;
+  get duration(): DurationT;
+  get midpoint(): TimeT;
+  contains(span: TimeT|Span<TimeT, DurationT>): boolean;
+  intersectsInterval(span: Span<TimeT, DurationT>): boolean;
+  intersects(a: TimeT, b: TimeT): boolean;
+  equals(span: Span<TimeT, DurationT>): boolean;
+  add(offset: DurationT): Span<TimeT, DurationT>;
+  pad(padding: DurationT): Span<TimeT, DurationT>;
 }
 
-export function tpTimeFromSeconds(seconds: number): TPTime {
-  return BigInt(Math.floor(seconds * 1e9));
-}
+export class TimeSpan implements Span<time, duration> {
+  static readonly ZERO = new TimeSpan(Time.ZERO, Time.ZERO);
+  readonly start: time;
+  readonly end: time;
 
-export function tpTimeToNanos(time: TPTime): number {
-  return Number(time);
-}
-
-export function tpTimeToMillis(time: TPTime): number {
-  return Number(time) / 1e6;
-}
-
-export function tpTimeToSeconds(time: TPTime): number {
-  return Number(time) / 1e9;
-}
-
-// Create a TPTime from an arbitrary SQL value.
-// Throws if the value cannot be reasonably converted to a bigint.
-// Assumes value is in nanoseconds.
-export function tpTimeFromSql(value: ColumnType): TPTime {
-  if (typeof value === 'bigint') {
-    return value;
-  } else if (typeof value === 'number') {
-    return tpTimeFromNanos(value);
-  } else if (value === null) {
-    return 0n;
-  } else {
-    throw Error(`Refusing to create Timestamp from unrelated type ${value}`);
-  }
-}
-
-export function tpDurationToSeconds(dur: TPDuration): number {
-  return tpTimeToSeconds(dur);
-}
-
-export function tpDurationToNanos(dur: TPDuration): number {
-  return tpTimeToSeconds(dur);
-}
-
-export function tpDurationFromNanos(nanos: number): TPDuration {
-  return tpTimeFromNanos(nanos);
-}
-
-export function tpDurationFromSql(nanos: ColumnType): TPDuration {
-  return tpTimeFromSql(nanos);
-}
-
-export interface Span<Unit, Duration = Unit> {
-  get start(): Unit;
-  get end(): Unit;
-  get duration(): Duration;
-  get midpoint(): Unit;
-  contains(span: Unit|Span<Unit, Duration>): boolean;
-  intersects(x: Span<Unit>): boolean;
-  equals(span: Span<Unit, Duration>): boolean;
-  add(offset: Duration): Span<Unit, Duration>;
-  pad(padding: Duration): Span<Unit, Duration>;
-}
-
-export class TPTimeSpan implements Span<TPTime, TPDuration> {
-  readonly start: TPTime;
-  readonly end: TPTime;
-
-  constructor(start: TPTime, end: TPTime) {
+  constructor(start: time, end: time) {
     assertTrue(
         start <= end,
         `Span start [${start}] cannot be greater than end [${end}]`);
@@ -176,15 +303,15 @@ export class TPTimeSpan implements Span<TPTime, TPDuration> {
     this.end = end;
   }
 
-  get duration(): TPDuration {
+  get duration(): duration {
     return this.end - this.start;
   }
 
-  get midpoint(): TPTime {
-    return (this.start + this.end) / 2n;
+  get midpoint(): time {
+    return Time.fromRaw((this.start + this.end) / 2n);
   }
 
-  contains(x: TPTime|Span<TPTime, TPDuration>): boolean {
+  contains(x: time|Span<time, duration>): boolean {
     if (typeof x === 'bigint') {
       return this.start <= x && x < this.end;
     } else {
@@ -192,19 +319,55 @@ export class TPTimeSpan implements Span<TPTime, TPDuration> {
     }
   }
 
-  intersects(x: Span<TPTime, TPDuration>): boolean {
-    return !(x.end <= this.start || x.start >= this.end);
+  intersectsInterval(span: Span<time, duration>): boolean {
+    return !(span.end <= this.start || span.start >= this.end);
   }
 
-  equals(span: Span<TPTime, TPDuration>): boolean {
+  intersects(start: time, end: time): boolean {
+    return !(end <= this.start || start >= this.end);
+  }
+
+  equals(span: Span<time, duration>): boolean {
     return this.start === span.start && this.end === span.end;
   }
 
-  add(x: TPTime): Span<TPTime, TPDuration> {
-    return new TPTimeSpan(this.start + x, this.end + x);
+  add(x: duration): Span<time, duration> {
+    return new TimeSpan(Time.add(this.start, x), Time.add(this.end, x));
   }
 
-  pad(padding: TPDuration): Span<TPTime, TPDuration> {
-    return new TPTimeSpan(this.start - padding, this.end + padding);
+  pad(padding: duration): Span<time, duration> {
+    return new TimeSpan(
+        Time.sub(this.start, padding), Time.add(this.end, padding));
   }
+}
+
+export enum TimestampFormat {
+  Timecode = 'timecode',
+  Raw = 'raw',
+  RawLocale = 'rawLocale',
+  Seconds = 'seconds',
+}
+
+let timestampFormatCached: TimestampFormat|undefined;
+
+const TIMESTAMP_FORMAT_KEY = 'timestampFormat';
+const DEFAULT_TIMESTAMP_FORMAT = TimestampFormat.Timecode;
+
+function isTimestampFormat(value: unknown): value is TimestampFormat {
+  return Object.values(TimestampFormat).includes(value as TimestampFormat);
+}
+
+export function timestampFormat(): TimestampFormat {
+  const storedFormat = localStorage.getItem(TIMESTAMP_FORMAT_KEY);
+  if (storedFormat && isTimestampFormat(storedFormat)) {
+    timestampFormatCached = storedFormat;
+  } else {
+    timestampFormatCached = DEFAULT_TIMESTAMP_FORMAT;
+  }
+  return timestampFormatCached;
+}
+
+export function setTimestampFormat(format: TimestampFormat) {
+  timestampFormatCached = format;
+  localStorage.setItem(TIMESTAMP_FORMAT_KEY, format);
 }

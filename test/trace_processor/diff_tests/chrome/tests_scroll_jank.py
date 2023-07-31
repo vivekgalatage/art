@@ -65,6 +65,33 @@ class ChromeScrollJank(TestSuite):
         """,
         out=Path('event_latency_to_breakdowns.out'))
 
+  def test_chrome_frames_with_missed_vsyncs(self):
+    return DiffTestBlueprint(
+        trace=DataPath('chrome_input_with_frame_view.pftrace'),
+        query="""
+        SELECT RUN_METRIC('chrome/chrome_scroll_jank_v3.sql');
+
+        SELECT
+          cause_of_jank,
+          sub_cause_of_jank,
+          delay_since_last_frame,
+          vsync_interval
+        FROM chrome_janky_frames;
+        """,
+        out=Path('scroll_jank_v3.out'))
+
+  def test_chrome_frames_with_missed_vsyncs_percentage(self):
+    return DiffTestBlueprint(
+        trace=DataPath('chrome_input_with_frame_view.pftrace'),
+        query="""
+        SELECT RUN_METRIC('chrome/chrome_scroll_jank_v3.sql');
+
+        SELECT
+          delayed_frame_percentage
+        FROM chrome_janky_frames_percentage;
+        """,
+        out=Path('scroll_jank_v3_percentage.out'))
+
   def test_event_latency_scroll_jank(self):
     return DiffTestBlueprint(
         trace=DataPath('event_latency_with_args.perfetto-trace'),
@@ -539,7 +566,7 @@ class ChromeScrollJank(TestSuite):
         5678,0,55000000,0,45000000
         5679,60000000,40000000,60000000,90000000
         5680,80000000,30000000,80000000,100000000
-        5681,120000000,70000000,120000000,-1
+        5681,120000000,70000000,120000000,"[NULL]"
         """))
 
   def test_chrome_scroll_intervals(self):
@@ -562,7 +589,7 @@ class ChromeScrollJank(TestSuite):
         3,120000000,70000000
         """))
 
-  def test_chrome_scroll_jank_v2(self):
+  def test_chrome_scroll_jank_v2_with_sub_cause(self):
     return DiffTestBlueprint(
         trace=DataPath('event_latency_with_args.perfetto-trace'),
         query=Metric('chrome_scroll_jank_v2'),
@@ -574,19 +601,96 @@ class ChromeScrollJank(TestSuite):
           num_scroll_janks: 4
           scroll_jank_causes_and_durations {
             cause: "SubmitCompositorFrameToPresentationCompositorFrame"
+            sub_cause: "BufferReadyToLatch"
             duration_ms: 39.44
           }
           scroll_jank_causes_and_durations {
             cause: "SubmitCompositorFrameToPresentationCompositorFrame"
+            sub_cause: "BufferReadyToLatch"
             duration_ms: 35.485
           }
           scroll_jank_causes_and_durations {
             cause: "SubmitCompositorFrameToPresentationCompositorFrame"
+            sub_cause: "BufferReadyToLatch"
             duration_ms: 43.838
           }
           scroll_jank_causes_and_durations {
             cause: "SubmitCompositorFrameToPresentationCompositorFrame"
+            sub_cause: "StartDrawToSwapStart"
             duration_ms: 35.454
+          }
+        }
+        """))
+
+  def test_chrome_scroll_jank_v2_without_sub_cause(self):
+    return DiffTestBlueprint(
+        trace=DataPath('chrome_input_with_frame_view.pftrace'),
+        query=Metric('chrome_scroll_jank_v2'),
+        out=TextProto(r"""
+        [perfetto.protos.chrome_scroll_jank_v2] {
+          scroll_processing_ms: 14434.053
+          scroll_jank_processing_ms: 550.359
+          scroll_jank_percentage: 3.8129207368159173
+          num_scroll_janks: 6
+          scroll_jank_causes_and_durations {
+            cause: "BrowserMainToRendererCompositor"
+            duration_ms: 60.05
+          }
+          scroll_jank_causes_and_durations {
+            cause: "RendererCompositorFinishedToBeginImplFrame"
+            duration_ms: 131.289
+          }
+          scroll_jank_causes_and_durations {
+            cause: "RendererCompositorFinishedToBeginImplFrame"
+            duration_ms: 115.174
+          }
+          scroll_jank_causes_and_durations {
+            cause: "RendererCompositorFinishedToBeginImplFrame"
+            duration_ms: 99.18
+          }
+          scroll_jank_causes_and_durations {
+            cause: "RendererCompositorFinishedToBeginImplFrame"
+            duration_ms: 83.038
+          }
+          scroll_jank_causes_and_durations {
+            cause: "RendererCompositorFinishedToBeginImplFrame"
+            duration_ms: 61.628
+          }
+        }
+        """))
+
+  def test_chrome_scroll_jank_v3(self):
+    return DiffTestBlueprint(
+        trace=DataPath('chrome_input_with_frame_view.pftrace'),
+        query=Metric('chrome_scroll_jank_v3'),
+        out=TextProto(r"""
+        [perfetto.protos.chrome_scroll_jank_v3] {
+          trace_num_frames: 291
+          trace_num_janky_frames: 3
+          trace_scroll_jank_percentage: 1.0309278350515463
+          vsync_interval_ms: 16.368
+          scrolls {
+            num_frames: 105
+            num_janky_frames: 2
+            scroll_jank_percentage: 1.9047619047619047
+            max_delay_since_last_frame: 6.126221896383187
+            scroll_jank_causes {
+              delay_since_last_frame: 2.044354838709678
+            }
+            scroll_jank_causes {
+              cause: "RendererCompositorFinishedToBeginImplFrame"
+              delay_since_last_frame: 6.126221896383187
+            }
+          }
+          scrolls {
+            num_frames: 84
+            num_janky_frames: 1
+            scroll_jank_percentage: 1.1904761904761905
+            max_delay_since_last_frame: 2.040811339198436
+            scroll_jank_causes {
+              cause: "RendererCompositorQueueingDelay"
+              delay_since_last_frame: 2.040811339198436
+            }
           }
         }
         """))

@@ -14,6 +14,7 @@
 
 import m from 'mithril';
 
+import {findRef} from '../base/dom_utils';
 import {assertExists, assertTrue} from '../base/logging';
 import {Actions} from '../common/actions';
 import {
@@ -28,8 +29,9 @@ import {
   FlamegraphStateViewingOption,
   ProfileType,
 } from '../common/state';
-import {tpTimeToCode} from '../common/time';
+import {Time} from '../common/time';
 import {profileType} from '../controller/flamegraph_controller';
+import {raf} from '../core/raf_scheduler';
 
 import {Flamegraph, NodeRendering} from './flamegraph';
 import {globals} from './globals';
@@ -40,7 +42,7 @@ import {Router} from './router';
 import {getCurrentTrace} from './sidebar';
 import {convertTraceToPprofAndDownload} from './trace_converter';
 import {Button} from './widgets/button';
-import {findRef} from './widgets/utils';
+import {DurationWidget} from './widgets/duration';
 
 interface FlamegraphDetailsPanelAttrs {}
 
@@ -64,7 +66,7 @@ const RENDER_OBJ_COUNT: NodeRendering = {
 
 export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
   private profileType?: ProfileType = undefined;
-  private ts = 0n;
+  private ts = Time.ZERO;
   private pids: number[] = [];
   private flamegraph: Flamegraph = new Flamegraph([]);
   private focusRegex = '';
@@ -81,7 +83,7 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
         flamegraphDetails.pids !== undefined &&
         flamegraphDetails.upids !== undefined) {
       this.profileType = profileType(flamegraphDetails.type);
-      this.ts = flamegraphDetails.start + flamegraphDetails.dur;
+      this.ts = Time.add(flamegraphDetails.start, flamegraphDetails.dur);
       this.pids = flamegraphDetails.pids;
       if (flamegraphDetails.flamegraph) {
         this.flamegraph.updateDataIfChanged(
@@ -108,7 +110,8 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
                         toSelectedCallsite(
                             flamegraphDetails.expandedCallsite)}`),
                   m('div.time',
-                    `Snapshot time: ${tpTimeToCode(flamegraphDetails.dur)}`),
+                    `Snapshot time: `,
+                    m(DurationWidget, {dur: flamegraphDetails.dur})),
                   m('input[type=text][placeholder=Focus]', {
                     oninput: (e: Event) => {
                       const target = (e.target as HTMLInputElement);
@@ -170,7 +173,7 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
           text: 'Skip',
           action: () => {
             globals.dispatch(Actions.dismissFlamegraphModal({}));
-            globals.rafScheduler.scheduleFullRedraw();
+            raf.scheduleFullRedraw();
           },
         },
       ],
@@ -256,7 +259,7 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
     // TODO(stevegolton): If we truely want to be standalone, then we shouldn't
     // rely on someone else calling the rafScheduler when the window is resized,
     // but it's good enough for now as we know the ViewerPage will do it.
-    globals.rafScheduler.addRedrawCallback(this.rafRedrawCallback);
+    raf.addRedrawCallback(this.rafRedrawCallback);
   }
 
   onupdate({dom}: m.CVnodeDOM<FlamegraphDetailsPanelAttrs>) {
@@ -264,7 +267,7 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
   }
 
   onremove(_vnode: m.CVnodeDOM<FlamegraphDetailsPanelAttrs>) {
-    globals.rafScheduler.removeRedrawCallback(this.rafRedrawCallback);
+    raf.removeRedrawCallback(this.rafRedrawCallback);
   }
 
   private static findCanvasElement(dom: Element): HTMLCanvasElement|undefined {
@@ -317,13 +320,13 @@ export class FlamegraphDetailsPanel extends Panel<FlamegraphDetailsPanelAttrs> {
 
   private onMouseMove({x, y}: {x: number, y: number}): boolean {
     this.flamegraph.onMouseMove({x, y});
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
     return true;
   }
 
   private onMouseOut() {
     this.flamegraph.onMouseOut();
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
   }
 
   private static selectViewingOptions(profileType: ProfileType) {

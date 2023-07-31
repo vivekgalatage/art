@@ -17,7 +17,8 @@ import m from 'mithril';
 
 import {Actions} from '../common/actions';
 import {TrackState} from '../common/state';
-import {TPTime} from '../common/time';
+import {duration, Span, time} from '../common/time';
+import {raf} from '../core/raf_scheduler';
 
 import {SELECTION_FILL_COLOR, TRACK_SHELL_WIDTH} from './css_constants';
 import {PerfettoMouseEvent} from './events';
@@ -26,6 +27,7 @@ import {drawGridLines} from './gridline_helper';
 import {BLANK_CHECKBOX, CHECKBOX, PIN} from './icons';
 import {Panel, PanelSize} from './panel';
 import {verticalScrollToTrack} from './scroll_helper';
+import {PxSpan, TimeScale} from './time_scale';
 import {SliceRect, Track} from './track';
 import {trackRegistry} from './track_registry';
 import {
@@ -61,6 +63,24 @@ function isSelected(id: string) {
   if (selection === null || selection.kind !== 'AREA') return false;
   const selectedArea = globals.state.areas[selection.areaId];
   return selectedArea.tracks.includes(id);
+}
+
+interface TrackChipsAttrs {
+  config: {[k: string]: any};
+}
+
+export class TrackChips implements m.ClassComponent<TrackChipsAttrs> {
+  view({attrs}: m.CVnode<TrackChipsAttrs>) {
+    const {config} = attrs;
+
+    const isMetric = 'namespace' in config;
+    const isDebuggable = ('isDebuggable' in config) && config.isDebuggable;
+
+    return [
+      isMetric && m('span.chip', 'metric'),
+      isDebuggable && m('span.chip', 'debuggable'),
+    ];
+  }
 }
 
 interface TrackShellAttrs {
@@ -111,8 +131,7 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
               },
             },
             attrs.trackState.name,
-            ('namespace' in attrs.trackState.config) &&
-                m('span.chip', 'metric'),
+            m(TrackChips, {config: attrs.trackState.config}),
             ),
         m('.track-buttons',
           attrs.track.getTrackShellButtons(),
@@ -149,14 +168,14 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
     const dataTransfer = e.dataTransfer;
     if (dataTransfer === null) return;
     this.dragging = true;
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
     dataTransfer.setData('perfetto/track', `${this.attrs!.trackState.id}`);
     dataTransfer.setDragImage(new Image(), 0, 0);
   }
 
   ondragend() {
     this.dragging = false;
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
   }
 
   ondragover(e: DragEvent) {
@@ -175,19 +194,19 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
     } else if (e.offsetY > e.target.scrollHeight / 3 * 2) {
       this.dropping = 'after';
     }
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
   }
 
   ondragleave() {
     this.dropping = undefined;
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
   }
 
   ondrop(e: DragEvent) {
     if (this.dropping === undefined) return;
     const dataTransfer = e.dataTransfer;
     if (dataTransfer === null) return;
-    globals.rafScheduler.scheduleFullRedraw();
+    raf.scheduleFullRedraw();
     const srcId = dataTransfer.getData('perfetto/track');
     const dstId = this.attrs!.trackState.id;
     globals.dispatch(Actions.moveTrack({srcId, op: this.dropping, dstId}));
@@ -209,11 +228,11 @@ export class TrackContent implements m.ClassComponent<TrackContentAttrs> {
           onmousemove: (e: PerfettoMouseEvent) => {
             attrs.track.onMouseMove(
                 {x: e.layerX - TRACK_SHELL_WIDTH, y: e.layerY});
-            globals.rafScheduler.scheduleRedraw();
+            raf.scheduleRedraw();
           },
           onmouseout: () => {
             attrs.track.onMouseOut();
-            globals.rafScheduler.scheduleRedraw();
+            raf.scheduleRedraw();
           },
           onmousedown: (e: PerfettoMouseEvent) => {
             this.mouseDownX = e.layerX;
@@ -244,7 +263,7 @@ export class TrackContent implements m.ClassComponent<TrackContentAttrs> {
                     {x: e.layerX - TRACK_SHELL_WIDTH, y: e.layerY})) {
               e.stopPropagation();
             }
-            globals.rafScheduler.scheduleRedraw();
+            raf.scheduleRedraw();
           },
         },
         node.children);
@@ -378,7 +397,7 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
     if (selectedArea.tracks.includes(trackState.id)) {
       ctx.fillStyle = SELECTION_FILL_COLOR;
       ctx.fillRect(
-          visibleTimeScale.tpTimeToPx(selectedArea.start) + TRACK_SHELL_WIDTH,
+          visibleTimeScale.timeToPx(selectedArea.start) + TRACK_SHELL_WIDTH,
           0,
           visibleTimeScale.durationToPx(selectedAreaDuration),
           size.height);
@@ -458,11 +477,14 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
     }
   }
 
-  getSliceRect(tStart: TPTime, tDur: TPTime, depth: number): SliceRect
+  getSliceRect(
+      visibleTimeScale: TimeScale, visibleWindow: Span<time, duration>,
+      windowSpan: PxSpan, tStart: time, tDur: time, depth: number): SliceRect
       |undefined {
     if (this.track === undefined) {
       return undefined;
     }
-    return this.track.getSliceRect(tStart, tDur, depth);
+    return this.track.getSliceRect(
+        visibleTimeScale, visibleWindow, windowSpan, tStart, tDur, depth);
   }
 }

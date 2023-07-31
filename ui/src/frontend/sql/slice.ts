@@ -14,24 +14,32 @@
 
 import m from 'mithril';
 
+import {BigintMath} from '../../base/bigint_math';
+import {exists} from '../../base/utils';
 import {Actions} from '../../common/actions';
 import {EngineProxy} from '../../common/engine';
-import {LONG, NUM, STR} from '../../common/query_result';
-import {TPDuration} from '../../common/time';
+import {
+  LONG,
+  LONG_NULL,
+  NUM,
+  STR,
+  STR_NULL,
+} from '../../common/query_result';
+import {duration, Time, time} from '../../common/time';
 import {Anchor} from '../anchor';
 import {globals} from '../globals';
 import {focusHorizontalRange, verticalScrollToTrack} from '../scroll_helper';
+import {Icons} from '../semantic_icons';
 import {
+  asArgSetId,
   asSliceSqlId,
   asUpid,
   asUtid,
   SliceSqlId,
-  TPTimestamp,
   Upid,
   Utid,
 } from '../sql_types';
-import {asTPTimestamp} from '../sql_types';
-import {constraintsToQueryFragment, SQLConstraints} from '../sql_utils';
+import {constraintsToQuerySuffix, SQLConstraints} from '../sql_utils';
 import {
   getProcessInfo,
   getThreadInfo,
@@ -39,14 +47,21 @@ import {
   ThreadInfo,
 } from '../thread_and_process_info';
 
+import {Arg, getArgs} from './args';
+
 export interface SliceDetails {
   id: SliceSqlId;
   name: string;
-  ts: TPTimestamp;
-  dur: TPDuration;
+  ts: time;
+  absTime?: string;
+  dur: duration;
   sqlTrackId: number;
   thread?: ThreadInfo;
   process?: ProcessInfo;
+  threadTs?: time;
+  threadDur?: duration;
+  category?: string;
+  args?: Arg[];
 }
 
 async function getUtidAndUpid(engine: EngineProxy, sqlTrackId: number):
@@ -99,15 +114,25 @@ async function getSliceFromConstraints(
       name,
       ts,
       dur,
-      track_id as trackId
+      track_id as trackId,
+      thread_dur as threadDur,
+      thread_ts as threadTs,
+      category,
+      arg_set_id as argSetId,
+      ABS_TIME_STR(ts) as absTime
     FROM slice
-    ${constraintsToQueryFragment(constraints)}`);
+    ${constraintsToQuerySuffix(constraints)}`);
   const it = query.iter({
     id: NUM,
     name: STR,
     ts: LONG,
     dur: LONG,
     trackId: NUM,
+    threadDur: LONG_NULL,
+    threadTs: LONG_NULL,
+    category: STR_NULL,
+    argSetId: NUM,
+    absTime: STR_NULL,
   });
 
   const result: SliceDetails[] = [];
@@ -123,11 +148,16 @@ async function getSliceFromConstraints(
     result.push({
       id: asSliceSqlId(it.id),
       name: it.name,
-      ts: asTPTimestamp(it.ts),
+      ts: Time.fromRaw(it.ts),
       dur: it.dur,
       sqlTrackId: it.trackId,
       thread,
       process,
+      threadDur: it.threadDur ?? undefined,
+      threadTs: exists(it.threadTs) ? Time.fromRaw(it.threadTs) : undefined,
+      category: it.category ?? undefined,
+      args: await getArgs(engine, asArgSetId(it.argSetId)),
+      absTime: it.absTime ?? undefined,
     });
   }
   return result;
@@ -150,26 +180,36 @@ export async function getSlice(
 interface SliceRefAttrs {
   readonly id: SliceSqlId;
   readonly name: string;
-  readonly ts: TPTimestamp;
-  readonly dur: TPDuration;
+  readonly ts: time;
+  readonly dur: duration;
   readonly sqlTrackId: number;
+
+  // Whether clicking on the reference should change the current tab
+  // to "current selection" tab in addition to updating the selection
+  // and changing the viewport. True by default.
+  readonly switchToCurrentSelectionTab?: boolean;
 }
 
 export class SliceRef implements m.ClassComponent<SliceRefAttrs> {
   view(vnode: m.Vnode<SliceRefAttrs>) {
+    const switchTab = vnode.attrs.switchToCurrentSelectionTab ?? true;
     return m(
         Anchor,
         {
-          icon: 'open_in_new',
+          icon: Icons.UpdateSelection,
           onclick: () => {
             const uiTrackId =
                 globals.state.uiTrackIdByTraceTrackId[vnode.attrs.sqlTrackId];
             if (uiTrackId === undefined) return;
             verticalScrollToTrack(uiTrackId, true);
+            // Clamp duration to 1 - i.e. for instant events
+            const dur = BigintMath.max(1n, vnode.attrs.dur);
             focusHorizontalRange(
-                vnode.attrs.ts, vnode.attrs.ts + vnode.attrs.dur);
-            globals.makeSelection(Actions.selectChromeSlice(
-                {id: vnode.attrs.id, trackId: uiTrackId, table: 'slice'}));
+                vnode.attrs.ts, Time.fromRaw(vnode.attrs.ts + dur));
+            globals.makeSelection(
+                Actions.selectChromeSlice(
+                    {id: vnode.attrs.id, trackId: uiTrackId, table: 'slice'}),
+                switchTab ? 'current_selection' : null);
           },
         },
         vnode.attrs.name);

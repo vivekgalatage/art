@@ -17,15 +17,16 @@ import {Actions} from '../../common/actions';
 import {cropText, drawIncompleteSlice} from '../../common/canvas_utils';
 import {colorForThreadIdleSlice, hslForSlice} from '../../common/colorizer';
 import {HighPrecisionTime} from '../../common/high_precision_time';
-import {PluginContext} from '../../common/plugin_api';
 import {LONG, LONG_NULL, NUM, STR} from '../../common/query_result';
-import {TPDuration, TPTime} from '../../common/time';
+import {duration, Span, Time, time} from '../../common/time';
 import {TrackData} from '../../common/track_data';
 import {TrackController} from '../../controller/track_controller';
 import {checkerboardExcept} from '../../frontend/checkerboard';
 import {globals} from '../../frontend/globals';
 import {cachedHsluvToHex} from '../../frontend/hsluv_cache';
+import {PxSpan, TimeScale} from '../../frontend/time_scale';
 import {NewTrackArgs, SliceRect, Track} from '../../frontend/track';
+import {PluginContext} from '../../public';
 
 export const SLICE_TRACK_KIND = 'ChromeSliceTrack';
 const SLICE_HEIGHT = 18;
@@ -58,9 +59,9 @@ export interface Data extends TrackData {
 
 export class ChromeSliceTrackController extends TrackController<Config, Data> {
   static kind = SLICE_TRACK_KIND;
-  private maxDurNs: TPDuration = 0n;
+  private maxDurNs: duration = 0n;
 
-  async onBoundsChange(start: TPTime, end: TPTime, resolution: TPDuration):
+  async onBoundsChange(start: time, end: time, resolution: duration):
       Promise<Data> {
     const tableName = this.namespaceTable('slice');
 
@@ -177,11 +178,11 @@ export class ChromeSliceTrack extends Track<Config, Data> {
 
   renderCanvas(ctx: CanvasRenderingContext2D): void {
     // TODO: fonts and colors should come from the CSS and not hardcoded here.
-
-    const {visibleTimeScale, visibleWindowTime} = globals.frontendLocalState;
     const data = this.data();
-
     if (data === undefined) return;  // Can't possibly draw anything.
+
+    const {visibleTimeSpan, visibleWindowTime, visibleTimeScale, windowSpan} =
+        globals.frontendLocalState;
 
     // If the cached trace slices don't fully cover the visible time range,
     // show a gray rectangle with a "Loading..." label.
@@ -190,8 +191,8 @@ export class ChromeSliceTrack extends Track<Config, Data> {
         this.getHeight(),
         visibleTimeScale.hpTimeToPx(visibleWindowTime.start),
         visibleTimeScale.hpTimeToPx(visibleWindowTime.end),
-        visibleTimeScale.tpTimeToPx(data.start),
-        visibleTimeScale.tpTimeToPx(data.end),
+        visibleTimeScale.timeToPx(data.start),
+        visibleTimeScale.timeToPx(data.end),
     );
 
     ctx.textAlign = 'center';
@@ -203,9 +204,10 @@ export class ChromeSliceTrack extends Track<Config, Data> {
     // drawings, otherwise it would result under another rect.
     let drawRectOnSelected = () => {};
 
+
     for (let i = 0; i < data.starts.length; i++) {
-      const tStart = data.starts[i];
-      let tEnd = data.ends[i];
+      const tStart = Time.fromRaw(data.starts[i]);
+      let tEnd = Time.fromRaw(data.ends[i]);
       const depth = data.depths[i];
       const titleId = data.titles[i];
       const sliceId = data.sliceIds[i];
@@ -216,10 +218,15 @@ export class ChromeSliceTrack extends Track<Config, Data> {
       if (isIncomplete) {  // incomplete slice
         // TODO(stevegolton): This isn't exactly equivalent, ideally we should
         // choose tEnd once we've conerted to screen space coords.
-        tEnd = visibleWindowTime.end.toTPTime('ceil');
+        tEnd = visibleWindowTime.end.toTime('ceil');
       }
 
-      const rect = this.getSliceRect(tStart, tEnd, depth);
+      if (!visibleTimeSpan.intersects(tStart, tEnd)) {
+        continue;
+      }
+
+      const rect = this.getSliceRect(
+          visibleTimeScale, visibleTimeSpan, windowSpan, tStart, tEnd, depth);
       if (!rect || !rect.visible) {
         continue;
       }
@@ -315,12 +322,15 @@ export class ChromeSliceTrack extends Track<Config, Data> {
         };
       }
 
-      ctx.fillStyle = lightness > 65 ? '#404040' : 'white';
-      const displayText = cropText(title, charWidth, rect.width);
-      const rectXCenter = rect.left + rect.width / 2;
-      ctx.textBaseline = 'middle';
-      ctx.font = this.getFont();
-      ctx.fillText(displayText, rectXCenter, rect.top + SLICE_HEIGHT / 2);
+      // Don't render text when we have less than 5px to play with.
+      if (rect.width >= 5) {
+        ctx.fillStyle = lightness > 65 ? '#404040' : 'white';
+        const displayText = cropText(title, charWidth, rect.width);
+        const rectXCenter = rect.left + rect.width / 2;
+        ctx.textBaseline = 'middle';
+        ctx.font = this.getFont();
+        ctx.fillText(displayText, rectXCenter, rect.top + SLICE_HEIGHT / 2);
+      }
     }
     drawRectOnSelected();
   }
@@ -342,7 +352,7 @@ export class ChromeSliceTrack extends Track<Config, Data> {
     if (data === undefined) return;
     const {
       visibleTimeScale: timeScale,
-      visibleWindowTime,
+      visibleWindowTime: visibleHPTimeSpan,
     } = globals.frontendLocalState;
     if (y < TRACK_PADDING) return;
     const instantWidthTime = timeScale.pxDeltaToDuration(HALF_CHEVRON_WIDTH_PX);
@@ -353,15 +363,17 @@ export class ChromeSliceTrack extends Track<Config, Data> {
       if (depth !== data.depths[i]) {
         continue;
       }
-      const tStart = HighPrecisionTime.fromTPTime(data.starts[i]);
+      const start = Time.fromRaw(data.starts[i]);
+      const tStart = HighPrecisionTime.fromTime(start);
       if (data.isInstant[i]) {
         if (tStart.sub(t).abs().lt(instantWidthTime)) {
           return i;
         }
       } else {
-        let tEnd = HighPrecisionTime.fromTPTime(data.ends[i]);
+        const end = Time.fromRaw(data.ends[i]);
+        let tEnd = HighPrecisionTime.fromTime(end);
         if (data.isIncomplete[i]) {
-          tEnd = visibleWindowTime.end;
+          tEnd = visibleHPTimeSpan.end;
         }
         if (tStart.lte(t) && t.lte(tEnd)) {
           return i;
@@ -408,20 +420,15 @@ export class ChromeSliceTrack extends Track<Config, Data> {
     return SLICE_HEIGHT * (this.config.maxDepth + 1) + 2 * TRACK_PADDING;
   }
 
-  getSliceRect(tStart: TPTime, tEnd: TPTime, depth: number): SliceRect
+  getSliceRect(
+      visibleTimeScale: TimeScale, visibleWindow: Span<time, duration>,
+      windowSpan: PxSpan, tStart: time, tEnd: time, depth: number): SliceRect
       |undefined {
-    const {
-      visibleTimeScale: timeScale,
-      visibleWindowTime,
-      windowSpan,
-    } = globals.frontendLocalState;
-
     const pxEnd = windowSpan.end;
-    const left = Math.max(timeScale.tpTimeToPx(tStart), 0);
-    const right = Math.min(timeScale.tpTimeToPx(tEnd), pxEnd);
+    const left = Math.max(visibleTimeScale.timeToPx(tStart), 0);
+    const right = Math.min(visibleTimeScale.timeToPx(tEnd), pxEnd);
 
-    const visible =
-        !(visibleWindowTime.start.gt(tEnd) || visibleWindowTime.end.lt(tStart));
+    const visible = visibleWindow.intersects(tStart, tEnd);
 
     return {
       left,

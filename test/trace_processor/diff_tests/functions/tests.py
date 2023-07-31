@@ -118,6 +118,29 @@ class Functions(TestSuite):
           "abacabadabacaba"
       """))
 
+  def test_create_function_recursive_string_memoized(self):
+    return DiffTestBlueprint(
+        trace=TextProto(""),
+        query="""
+        -- Compute factorial.
+        SELECT create_function('f(x INT)', 'STRING',
+        '
+          SELECT IIF(
+            $x = 0,
+            "",
+            -- 97 is the ASCII code for "a".
+            f($x - 1) || char(96 + $x) || f($x - 1))
+        ');
+
+        SELECT experimental_memoize('f');
+
+        SELECT f(4) as result;
+      """,
+        out=Csv("""
+          "result"
+          "abacabadabacaba"
+      """))
+
   def test_create_function_memoize(self):
     return DiffTestBlueprint(
         trace=TextProto(""),
@@ -137,6 +160,32 @@ class Functions(TestSuite):
         out=Csv("""
         "result"
         1125899906842624
+      """))
+
+  def test_create_function_memoize_float(self):
+    return DiffTestBlueprint(
+        trace=TextProto(""),
+        query="""
+        -- Compute 2^n inefficiently to test memoization.
+        -- If it times out, memoization is not working.
+        SELECT create_function('f(x INT)', 'FLOAT',
+        '
+          SELECT $x + 0.5
+        ');
+
+        SELECT EXPERIMENTAL_MEMOIZE('f');
+
+        SELECT printf("%.1f", f(1)) as result
+        UNION ALL
+        SELECT printf("%.1f", f(1)) as result
+        UNION ALL
+        SELECT printf("%.1f", f(1)) as result
+      """,
+        out=Csv("""
+        "result"
+        "1.5"
+        "1.5"
+        "1.5"
       """))
 
   def test_create_function_memoize_intermittent_memoization(self):
@@ -234,6 +283,19 @@ class Functions(TestSuite):
         13,1
         14,1
         15,1
+      """))
+
+  def test_create_view_function(self):
+    return DiffTestBlueprint(
+        trace=TextProto(""),
+        query="""
+        SELECT create_view_function('f(x INT)', 'result INT', 'SELECT $x + 1 as result');
+
+        SELECT * FROM f(5);
+      """,
+        out=Csv("""
+        "result"
+        6
       """))
 
   def test_first_non_null_frame(self):
@@ -567,6 +629,47 @@ class Functions(TestSuite):
                   A (0x0)
             """))
 
+  def test_profile_aggregates_samples(self):
+    return DiffTestBlueprint(
+        trace=DataPath("perf_sample.pb"),
+        query="""
+        WITH samples(stack, value) AS (
+        VALUES
+          (CAT_STACKS("A", "B"), 4),
+          (CAT_STACKS("A", "B"), 8),
+          (CAT_STACKS("A", "B"), 15),
+          (CAT_STACKS("A", "C"), 16),
+          (CAT_STACKS("C", "B"), 23),
+          (CAT_STACKS("C", "B"), 42)
+        )
+        SELECT HEX(
+          EXPERIMENTAL_PROFILE(
+            stack, "type", "units", value))
+        FROM samples
+        """,
+        out=BinaryProto(
+            message_type="perfetto.third_party.perftools.profiles.Profile",
+            post_processing=PrintProfileProto,
+            contents="""
+            Sample:
+              Values: 16
+              Stack:
+                C (0x0)
+                A (0x0)
+
+            Sample:
+              Values: 27
+              Stack:
+                B (0x0)
+                A (0x0)
+
+            Sample:
+              Values: 65
+              Stack:
+                B (0x0)
+                C (0x0)
+            """))
+
   def test_annotated_callstack(self):
     return DiffTestBlueprint(
         trace=DataPath("perf_sample_annotations.pftrace"),
@@ -735,3 +838,21 @@ class Functions(TestSuite):
         "a","b","c","d","e","f","g"
         2718,0,1000,"[NULL]","[NULL]","[NULL]","[NULL]"
         """))
+
+  def test_table_function_drop_partial(self):
+    return DiffTestBlueprint(
+        trace=TextProto(""),
+        query="""
+          CREATE TABLE bar AS SELECT 1;
+
+          CREATE OR REPLACE PERFETTO FUNCTION foo()
+          RETURNS TABLE(x INT) AS
+          SELECT 1 AS x
+          UNION
+          SELECT * FROM bar;
+
+          CREATE TABLE res AS SELECT * FROM foo() LIMIT 1;
+
+          DROP TABLE bar;
+        """,
+        out=Csv(""))

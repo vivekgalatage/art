@@ -16,6 +16,10 @@ import {Draft} from 'immer';
 
 import {assertExists, assertTrue, assertUnreachable} from '../base/logging';
 import {RecordConfig} from '../controller/record_config_types';
+import {
+  GenericSliceDetailsTabConfig,
+  GenericSliceDetailsTabConfigBase,
+} from '../frontend/generic_slice_details_tab';
 import {globals} from '../frontend/globals';
 import {
   Aggregation,
@@ -34,7 +38,13 @@ import {
 } from './dragndrop_logic';
 import {createEmptyState} from './empty_state';
 import {DEFAULT_VIEWING_OPTION, PERF_SAMPLES_KEY} from './flamegraph_util';
-import {traceEventBegin, traceEventEnd, TraceEventScope} from './metatracing';
+import {
+  MetatraceTrackId,
+  traceEvent,
+  traceEventBegin,
+  traceEventEnd,
+  TraceEventScope,
+} from './metatracing';
 import {
   AdbRecordingTarget,
   Area,
@@ -44,8 +54,10 @@ import {
   FtraceFilterPatch,
   LoadedConfig,
   NewEngineMode,
+  OmniboxMode,
   OmniboxState,
   Pagination,
+  PendingDeeplinkState,
   PivotTableResult,
   PrimaryTrackSortKey,
   ProfileType,
@@ -61,8 +73,7 @@ import {
   UtidToTrackSortKey,
   VisibleState,
 } from './state';
-import {TPDuration, TPTime} from './time';
-import {SqlObjectDetailsTabConfig} from '../frontend/details_panel';
+import {duration, time} from './time';
 
 export const DEBUG_SLICE_TRACK_KIND = 'DebugSliceTrack';
 
@@ -90,8 +101,8 @@ export interface PostedTrace {
 }
 
 export interface PostedScrollToRange {
-  timeStart: TPTime;
-  timeEnd: TPTime;
+  timeStart: time;
+  timeEnd: time;
   viewPercentage?: number;
 }
 
@@ -470,8 +481,7 @@ export const StateActions = {
     }
   },
 
-  maybeSetPendingDeeplink(
-      state: StateDraft, args: {ts?: string, dur?: string, tid?: string}) {
+  maybeSetPendingDeeplink(state: StateDraft, args: PendingDeeplinkState) {
     state.pendingDeeplink = args;
   },
 
@@ -535,7 +545,8 @@ export const StateActions = {
     if (statusTraceEvent) {
       traceEventEnd(statusTraceEvent);
     }
-    statusTraceEvent = traceEventBegin(args.msg);
+    statusTraceEvent =
+        traceEventBegin(args.msg, {track: MetatraceTrackId.kOmniboxStatus});
     state.status = args;
   },
 
@@ -573,7 +584,7 @@ export const StateActions = {
 
   addAutomaticNote(
       state: StateDraft,
-      args: {timestamp: TPTime, color: string, text: string}): void {
+      args: {timestamp: time, color: string, text: string}): void {
     const id = generateNextId(state);
     state.notes[id] = {
       noteType: 'DEFAULT',
@@ -584,7 +595,7 @@ export const StateActions = {
     };
   },
 
-  addNote(state: StateDraft, args: {timestamp: TPTime, color: string}): void {
+  addNote(state: StateDraft, args: {timestamp: time, color: string}): void {
     const id = generateNextId(state);
     state.notes[id] = {
       noteType: 'DEFAULT',
@@ -684,7 +695,7 @@ export const StateActions = {
 
   selectCounter(
       state: StateDraft,
-      args: {leftTs: TPTime, rightTs: TPTime, id: number, trackId: string}):
+      args: {leftTs: time, rightTs: time, id: number, trackId: string}):
       void {
         state.currentSelection = {
           kind: 'COUNTER',
@@ -697,7 +708,7 @@ export const StateActions = {
 
   selectHeapProfile(
       state: StateDraft,
-      args: {id: number, upid: number, ts: TPTime, type: ProfileType}): void {
+      args: {id: number, upid: number, ts: time, type: ProfileType}): void {
     state.currentSelection = {
       kind: 'HEAP_PROFILE',
       id: args.id,
@@ -707,7 +718,8 @@ export const StateActions = {
     };
     this.openFlamegraph(state, {
       type: args.type,
-      start: state.traceTime.start,
+      start: state.traceTime.start as
+          time,  // TODO(stevegolton): Avoid type assertion here.
       end: args.ts,
       upids: [args.upid],
       viewingOption: DEFAULT_VIEWING_OPTION,
@@ -717,8 +729,8 @@ export const StateActions = {
   selectPerfSamples(state: StateDraft, args: {
     id: number,
     upid: number,
-    leftTs: TPTime,
-    rightTs: TPTime,
+    leftTs: time,
+    rightTs: time,
     type: ProfileType
   }): void {
     state.currentSelection = {
@@ -740,8 +752,8 @@ export const StateActions = {
 
   openFlamegraph(state: StateDraft, args: {
     upids: number[],
-    start: TPTime,
-    end: TPTime,
+    start: time,
+    end: time,
     type: ProfileType,
     viewingOption: FlamegraphStateViewingOption
   }): void {
@@ -757,7 +769,7 @@ export const StateActions = {
   },
 
   selectCpuProfileSample(
-      state: StateDraft, args: {id: number, utid: number, ts: TPTime}): void {
+      state: StateDraft, args: {id: number, utid: number, ts: time}): void {
     state.currentSelection = {
       kind: 'CPU_PROFILE_SAMPLE',
       id: args.id,
@@ -798,42 +810,29 @@ export const StateActions = {
         state.pendingScrollId = args.scroll ? args.id : undefined;
       },
 
-  selectDebugSlice(state: StateDraft, args: {
+  selectGenericSlice(state: StateDraft, args: {
     id: number,
     sqlTableName: string,
-    start: TPTime,
-    duration: TPDuration,
+    start: time,
+    duration: duration,
     trackId: string,
+    detailsPanelConfig:
+        {kind: string, config: GenericSliceDetailsTabConfigBase},
   }): void {
-    state.currentSelection = {
-      kind: 'DEBUG_SLICE',
+    const detailsPanelConfig: GenericSliceDetailsTabConfig = {
       id: args.id,
-      sqlTableName: args.sqlTableName,
-      start: args.start,
-      duration: args.duration,
-      trackId: args.trackId,
+      ...args.detailsPanelConfig.config,
     };
-  },
 
-  selectBasicSqlSlice(state: StateDraft, args: {
-    id: number,
-    sqlTableName: string,
-    start: TPTime,
-    duration: TPDuration,
-    trackId: string,
-    detailsPanelConfig: {
-      kind: string,
-      config: SqlObjectDetailsTabConfig
-    },
-  }): void {
     state.currentSelection = {
-      kind: 'BASIC_SQL_OBJECT',
+      kind: 'GENERIC_SLICE',
       id: args.id,
       sqlTableName: args.sqlTableName,
       start: args.start,
       duration: args.duration,
       trackId: args.trackId,
-      detailsPanelConfig: args.detailsPanelConfig,
+      detailsPanelConfig:
+          {kind: args.detailsPanelConfig.kind, config: detailsPanelConfig},
     };
   },
 
@@ -929,6 +928,10 @@ export const StateActions = {
 
   setOmnibox(state: StateDraft, args: OmniboxState): void {
     state.omniboxState = args;
+  },
+
+  setOmniboxMode(state: StateDraft, args: {mode: OmniboxMode}): void {
+    state.omniboxState.mode = args.mode;
   },
 
   selectArea(state: StateDraft, args: {area: Area}): void {
@@ -1062,16 +1065,22 @@ export const StateActions = {
     state.searchIndex = args.index;
   },
 
-  setHoverCursorTimestamp(state: StateDraft, args: {ts: TPTime}) {
+  setHoverCursorTimestamp(state: StateDraft, args: {ts: time}) {
     state.hoverCursorTimestamp = args.ts;
   },
 
-  setHoveredNoteTimestamp(state: StateDraft, args: {ts: TPTime}) {
+  setHoveredNoteTimestamp(state: StateDraft, args: {ts: time}) {
     state.hoveredNoteTimestamp = args.ts;
   },
 
   setCurrentTab(state: StateDraft, args: {tab: string|undefined}) {
-    state.currentTab = args.tab;
+    traceEvent('setCurrentTab', () => {
+      state.currentTab = args.tab;
+    }, {
+      args: {
+        tab: args.tab ?? '<undefined>',
+      },
+    });
   },
 
   toggleAllTrackGroups(state: StateDraft, args: {collapsed: boolean}) {

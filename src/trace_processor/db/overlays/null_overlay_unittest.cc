@@ -25,7 +25,7 @@ namespace {
 TEST(NullOverlay, MapToStorageRangeOutsideBoundary) {
   BitVector bv{0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0};
   NullOverlay overlay(&bv);
-  StorageRange r = overlay.MapToStorageRange({RowMap::Range(1, 6)});
+  StorageRange r = overlay.MapToStorageRange(TableRange(1, 6));
 
   ASSERT_EQ(r.range.start, 0u);
   ASSERT_EQ(r.range.end, 2u);
@@ -34,10 +34,29 @@ TEST(NullOverlay, MapToStorageRangeOutsideBoundary) {
 TEST(NullOverlay, MapToStorageRangeOnBoundary) {
   BitVector bv{0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0};
   NullOverlay overlay(&bv);
-  StorageRange r = overlay.MapToStorageRange({RowMap::Range(3, 8)});
+  StorageRange r = overlay.MapToStorageRange(TableRange(3, 8));
 
   ASSERT_EQ(r.range.start, 1u);
   ASSERT_EQ(r.range.end, 4u);
+}
+
+TEST(NullOverlay, MapToTableRangeOutsideBoundary) {
+  BitVector bv{0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0};
+  NullOverlay overlay(&bv);
+  auto r =
+      overlay.MapToTableRangeOrBitVector(StorageRange(1, 3), OverlayOp::kOther);
+
+  // All set bits between |bv| index 3 and 6.
+  ASSERT_EQ(std::move(r).TakeIfBitVector().CountSetBits(), 2u);
+}
+
+TEST(NullOverlay, MapToTableRangeOnBoundary) {
+  BitVector bv{0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0};
+  NullOverlay overlay(&bv);
+  auto r =
+      overlay.MapToTableRangeOrBitVector(StorageRange(0, 5), OverlayOp::kOther);
+
+  ASSERT_EQ(std::move(r).TakeIfBitVector().CountSetBits(), 5u);
 }
 
 TEST(NullOverlay, MapToTableBitVector) {

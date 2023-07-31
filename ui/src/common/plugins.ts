@@ -12,32 +12,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {Engine} from '../common/engine';
+
 import {
   TrackControllerFactory,
   trackControllerRegistry,
 } from '../controller/track_controller';
 import {TrackCreator} from '../frontend/track';
 import {trackRegistry} from '../frontend/track_registry';
-
 import {
+  Command,
+  EngineProxy,
   PluginContext,
   PluginInfo,
+  Store,
+  TracePlugin,
+  TracePluginFactory,
   TrackInfo,
-  TrackProvider,
-} from './plugin_api';
+} from '../public';
+
+import {Engine} from './engine';
 import {Registry} from './registry';
+import {State} from './state';
+
+interface TracePluginContext {
+  plugin: TracePlugin;
+  store: Store<unknown>;
+}
 
 // Every plugin gets its own PluginContext. This is how we keep track
 // what each plugin is doing and how we can blame issues on particular
 // plugins.
 export class PluginContextImpl implements PluginContext {
   readonly pluginId: string;
-  private trackProviders: TrackProvider[];
+  private tracePluginFactory?: TracePluginFactory<any>;
+  private _tracePluginCtx?: TracePluginContext;
 
   constructor(pluginId: string) {
     this.pluginId = pluginId;
-    this.trackProviders = [];
   }
 
   // ==================================================================
@@ -50,16 +61,58 @@ export class PluginContextImpl implements PluginContext {
     trackRegistry.register(track);
   }
 
-  registerTrackProvider(provider: TrackProvider) {
-    this.trackProviders.push(provider);
+  registerTracePluginFactory<T>(pluginFactory: TracePluginFactory<T>): void {
+    this.tracePluginFactory = pluginFactory;
   }
   // ==================================================================
 
   // ==================================================================
   // Internal facing API:
-  findPotentialTracks(engine: Engine): Promise<TrackInfo[]>[] {
-    const proxy = engine.getProxy(this.pluginId);
-    return this.trackProviders.map((f) => f(proxy));
+  findPotentialTracks(): Promise<TrackInfo[]>[] {
+    const tracePlugin = this.tracePlugin;
+    if (tracePlugin && tracePlugin.tracks) {
+      return [tracePlugin.tracks()];
+    } else {
+      return [];
+    }
+  }
+
+  onTraceLoad(store: Store<State>, engine: Engine): void {
+    const TracePluginClass = this.tracePluginFactory;
+    if (TracePluginClass) {
+      // Make an engine proxy for this plugin.
+      const engineProxy: EngineProxy = engine.getProxy(this.pluginId);
+
+      // Extract the initial state and pass to the plugin factory for migration.
+      const initialState = store.state.plugins[this.pluginId];
+      const migratedState = TracePluginClass.migrate(initialState);
+
+      // Store the initial state in our root store.
+      store.edit((draft) => {
+        draft.plugins[this.pluginId] = migratedState;
+      });
+
+      // Create a proxy store for our plugin to use.
+      const storeProxy = store.createProxy<unknown>(['plugins', this.pluginId]);
+
+      // Instantiate the plugin.
+      this._tracePluginCtx = {
+        plugin: new TracePluginClass(storeProxy, engineProxy),
+        store: storeProxy,
+      };
+    }
+  }
+
+  onTraceClosed() {
+    if (this._tracePluginCtx) {
+      this._tracePluginCtx.plugin.dispose();
+      this._tracePluginCtx.store.dispose();
+      this._tracePluginCtx = undefined;
+    }
+  }
+
+  get tracePlugin(): TracePlugin|undefined {
+    return this._tracePluginCtx?.plugin;
   }
 
   // Unload the plugin. Ideally no plugin code runs after this point.
@@ -67,6 +120,7 @@ export class PluginContextImpl implements PluginContext {
   revoke() {
     // TODO(hjd): Remove from trackControllerRegistry, trackRegistry,
     // etc.
+    // TODO(stevegolton): Dispose the trace plugin.
   }
   // ==================================================================
 }
@@ -114,14 +168,37 @@ export class PluginManager {
     return this.contexts.get(pluginId);
   }
 
-  findPotentialTracks(engine: Engine): Promise<TrackInfo[]>[] {
+  findPotentialTracks(): Promise<TrackInfo[]>[] {
     const promises = [];
     for (const context of this.contexts.values()) {
-      for (const promise of context.findPotentialTracks(engine)) {
+      for (const promise of context.findPotentialTracks()) {
         promises.push(promise);
       }
     }
     return promises;
+  }
+
+  onTraceLoad(store: Store<State>, engine: Engine): void {
+    for (const context of this.contexts.values()) {
+      context.onTraceLoad(store, engine);
+    }
+  }
+
+  onTraceClose() {
+    for (const context of this.contexts.values()) {
+      context.onTraceClosed();
+    }
+  }
+
+  commands(): Command[] {
+    return Array.from(this.contexts.values()).flatMap((ctx) => {
+      const tracePlugin = ctx.tracePlugin;
+      if (tracePlugin && tracePlugin.commands) {
+        return tracePlugin.commands();
+      } else {
+        return [];
+      }
+    });
   }
 }
 

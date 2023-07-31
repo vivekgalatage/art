@@ -17,11 +17,12 @@ import m from 'mithril';
 import {assertExists} from '../base/logging';
 import {EngineProxy} from '../common/engine';
 import {TrackState} from '../common/state';
-import {TPTime} from '../common/time';
+import {duration, Span, time} from '../common/time';
 import {TrackData} from '../common/track_data';
 
 import {checkerboard} from './checkerboard';
 import {globals} from './globals';
+import {PxSpan, TimeScale} from './time_scale';
 import {TrackButtonAttrs} from './track_panel';
 
 // Args passed to the track constructors when creating a new track.
@@ -208,8 +209,10 @@ export abstract class Track<Config = {}, Data extends TrackData = TrackData> {
   // only for track types that support slices e.g. chrome_slice, async_slices
   // tStart - slice start time in seconds, tEnd - slice end time in seconds,
   // depth - slice depth
-  getSliceRect(_tStart: TPTime, _tEnd: TPTime, _depth: number): SliceRect
-      |undefined {
+  getSliceRect(
+      _visibleTimeScale: TimeScale, _visibleWindow: Span<time, duration>,
+      _windowSpan: PxSpan, _tStart: time, _tEnd: time,
+      _depth: number): SliceRect|undefined {
     return undefined;
   }
 }

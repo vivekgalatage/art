@@ -18,6 +18,7 @@ import {v4 as uuidv4} from 'uuid';
 import {assertExists} from '../base/logging';
 import {QueryResponse, runQuery} from '../common/queries';
 import {QueryError} from '../common/query_result';
+import {raf} from '../core/raf_scheduler';
 import {
   AddDebugTrackMenu,
   uuidToViewName,
@@ -30,11 +31,10 @@ import {
   closeTab,
   NewBottomTabArgs,
 } from './bottom_tab';
-import {globals} from './globals';
 import {QueryTable} from './query_table';
 import {Button} from './widgets/button';
-import {Popup, PopupPosition} from './widgets/popup';
-
+import {PopupMenu2} from './widgets/menu';
+import {PopupPosition} from './widgets/popup';
 
 export function runQueryInNewTab(query: string, title: string, tag?: string) {
   return addTab({
@@ -56,7 +56,7 @@ interface QueryResultTabConfig {
 }
 
 export class QueryResultTab extends BottomTab<QueryResultTabConfig> {
-  static readonly kind = 'org.perfetto.QueryResultTab';
+  static readonly kind = 'dev.perfetto.QueryResultTab';
 
   queryResponse?: QueryResponse;
   sqlViewName?: string;
@@ -79,7 +79,7 @@ export class QueryResultTab extends BottomTab<QueryResultTabConfig> {
     } else {
       const result = await runQuery(this.config.query, this.engine);
       this.queryResponse = result;
-      globals.rafScheduler.scheduleFullRedraw();
+      raf.scheduleFullRedraw();
       if (result.error !== undefined) {
         return;
       }
@@ -90,7 +90,7 @@ export class QueryResultTab extends BottomTab<QueryResultTabConfig> {
     if (uuid !== '') {
       this.sqlViewName = await this.createViewForDebugTrack(uuid);
       if (this.sqlViewName) {
-        globals.rafScheduler.scheduleFullRedraw();
+        raf.scheduleFullRedraw();
       }
     }
   }
@@ -105,18 +105,21 @@ export class QueryResultTab extends BottomTab<QueryResultTabConfig> {
     return m(QueryTable, {
       query: this.config.query,
       resp: this.queryResponse,
+      fillParent: true,
       onClose: () => closeTab(this.uuid),
       contextButtons: [
         this.sqlViewName === undefined ?
             null :
-            m(Popup,
+            m(PopupMenu2,
               {
                 trigger: m(Button, {label: 'Show debug track', minimal: true}),
-                position: PopupPosition.Top,
+                popupPosition: PopupPosition.Top,
               },
               m(AddDebugTrackMenu, {
-                sqlViewName: this.sqlViewName,
-                columns: assertExists(this.queryResponse).columns,
+                dataSource: {
+                  sqlSource: `select * from ${this.sqlViewName}`,
+                  columns: assertExists(this.queryResponse).columns,
+                },
                 engine: this.engine,
               })),
       ],
@@ -133,11 +136,14 @@ export class QueryResultTab extends BottomTab<QueryResultTabConfig> {
     const viewId = uuidToViewName(uuid);
     // Assuming that the query results come from a SELECT query, try creating a
     // view to allow us to reuse it for further queries.
-    // TODO(altimin): This should get the actual query that was used to
-    // generate the results from the SQL query iterator.
+    const hasValidQueryResponse =
+        this.queryResponse && this.queryResponse.error === undefined;
+    const sqlQuery = hasValidQueryResponse ?
+        this.queryResponse!.lastStatementSql :
+        this.config.query;
     try {
-      const createViewResult = await this.engine.query(
-          `create view ${viewId} as ${this.config.query}`);
+      const createViewResult =
+          await this.engine.query(`create view ${viewId} as ${sqlQuery}`);
       if (createViewResult.error()) {
         // If it failed, do nothing.
         return '';
